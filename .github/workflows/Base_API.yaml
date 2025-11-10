@@ -1,176 +1,133 @@
-name: Build PySide6 6.10 Full Documentation (Base + API)
+name: Build PySide6 Documentation
 
 on:
-  workflow_dispatch:
-  # push:
-  #   branches: [ main ]
+  workflow_dispatch:  # 允许手动触发
+  push:
+    tags:
+      - 'v*'  # 标签推送时触发
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日午夜运行一次
 
-permissions:
-  contents: read
-  actions: write
+env:
+  PYTHON_VERSION: '3.9'
+  QT_VERSION: '6.10.0'
+  PYSIDE_VERSION: '6.10.0'
 
 jobs:
-  build-docs:
-    runs-on: ubuntu-latest
-    env:
-      QT_VERSION: "6.10.0"
-      QT_SRC_ARCHIVE: "qt-everywhere-src-${{ env.QT_VERSION }}.tar.xz"
-      QT_SRC_URL_OFFICIAL: "https://download.qt.io/official_releases/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
-      QT_SRC_URL_TUNA: "https://mirrors.tuna.tsinghua.edu.cn/qt/archive/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
-      QT_SRC_URL_USTC: "https://mirrors.ustc.edu.cn/qtproject/archive/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
-      QT_SRC_RELEASE_TAG: "v6.10.0-assets"
-      PYSIDE_REPO: "https://github.com/pyside/pyside-setup.git"
-      PYSIDE_TAG: "v6.10.0"
-      PYTHON_VERSION: "3.11"
-
+  build-documentation:
+    name: Build PySide6 Docs
+    runs-on: ubuntu-22.04
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake ninja-build \
-            libxml2-dev libxslt1-dev \
-            libgl1-mesa-dev libegl1-mesa-dev \
-            graphviz libgraphviz-dev \
-            wget tar xz-utils \
-            qt6-base-dev-tools  # ensures qdoc6/qtpaths6 in PATH
-
-      - name: Cache Qt source
-        id: cache-qt-src
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.QT_SRC_ARCHIVE }}
-          key: qt-src-${{ env.QT_VERSION }}-v3
-
-      - name: Download Qt source (cache → official → mirrors → release)
-        if: steps.cache-qt-src.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          ARCHIVE="${{ env.QT_SRC_ARCHIVE }}"
-          echo "Qt source not cached. Trying download strategies..."
-
-          # Strategy 1: Official
-          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_OFFICIAL }}" -O "$ARCHIVE.tmp"; then
-            mv "$ARCHIVE.tmp" "$ARCHIVE"
-            echo "✅ Downloaded from official"
-            exit 0
-          fi
-
-          # Strategy 2: TUNA
-          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_TUNA }}" -O "$ARCHIVE.tmp"; then
-            mv "$ARCHIVE.tmp" "$ARCHIVE"
-            echo "✅ Downloaded from TUNA"
-            exit 0
-          fi
-
-          # Strategy 3: USTC
-          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_USTC }}" -O "$ARCHIVE.tmp"; then
-            mv "$ARCHIVE.tmp" "$ARCHIVE"
-            echo "✅ Downloaded from USTC"
-            exit 0
-          fi
-
-          # Strategy 4: Private Release (requires gh CLI)
-          if command -v gh >/dev/null && \
-             echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token && \
-             gh release download "${{ env.QT_SRC_RELEASE_TAG }}" \
-                 --repo "$GITHUB_REPOSITORY" \
-                 -p "$ARCHIVE" 2>/dev/null; then
-            echo "✅ Downloaded from private release"
-            exit 0
-          fi
-
-          echo "❌ All download strategies failed"
-          exit 1
-
-      - name: Extract Qt source
-        run: |
-          mkdir -p qt-src
-          echo "Extracting ${{ env.QT_SRC_ARCHIVE }}..."
-          tar -xf "${{ env.QT_SRC_ARCHIVE }}" -C qt-src --strip-components=1
-          echo "✅ Qt source extracted."
-
-      - name: Clone PySide6 setup repo
-        run: |
-          git clone --depth 1 --branch ${{ env.PYSIDE_TAG }} ${{ env.PYSIDE_REPO }} pyside-setup
-
-      - name: Install documentation requirements
-        run: |
-          cd pyside-setup
-          pip install -r requirements-doc.txt
-
-      - name: Set up virtual environment
-        run: |
-          python -m venv venv-docs
-          source venv-docs/bin/activate
-          pip install -U pip
-          pip install -r pyside-setup/requirements-doc.txt
-
-      - name: Build PySide6 + Documentation
-        run: |
-          source venv-docs/bin/activate
-          cd pyside-setup
-
-          python setup.py build \
-            --build-type=all \
-            --module-subset=Core,Gui,Widgets \
-            --qt-src-dir="${{ github.workspace }}/qt-src" \
-            --build-docs \
-            --doc-build-online \
-            --skip-make-install \
-            --skip-packaging \
-            --verbose-build
-
-      - name: Build API docs with ninja
-        run: |
-          source venv-docs/bin/activate
-          BUILD_DIR=$(find . -name "build" -type d -not -path "*/\.*" | grep -E "build.*${{ env.PYTHON_VERSION }}" | head -n1 || echo "./build")
-          cd "$BUILD_DIR/pyside6" || { echo "❌ pyside6 build dir not found"; exit 1; }
-          ninja apidoc -j $(nproc)
-
-      - name: Collect and package documentation
-        run: |
-          source venv-docs/bin/activate
-          mkdir -p artifacts/{html,qch}
-
-          HTML_DIR=$(find . -path "*/pyside6/doc/html" -type d | head -n1)
-          SHIBOKEN_HTML_DIR=$(find . -path "*/shiboken6/doc/html" -type d | head -n1)
-          QCH_FILES=$(find . -name "*.qch" -type f)
-
-          [ -n "$HTML_DIR" ] && cp -r "$HTML_DIR"/* artifacts/html/ 2>/dev/null || true
-          [ -n "$SHIBOKEN_HTML_DIR" ] && mkdir -p artifacts/html/shiboken6 && cp -r "$SHIBOKEN_HTML_DIR"/* artifacts/html/shiboken6/ 2>/dev/null || true
-          [ -n "$QCH_FILES" ] && cp $QCH_FILES artifacts/qch/ 2>/dev/null || true
-
-          cat > artifacts/index.html <<'EOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>PySide6 6.10 Docs</title>
-</head>
-<body>
-  <h1>PySide6 6.10 Full Documentation</h1>
-  <ul>
-    <li><a href="html/pyside6/index.html">📖 PySide6 HTML</a></li>
-    <li><a href="html/shiboken6/index.html">📖 Shiboken HTML</a></li>
-    <li><a href="qch/">📦 QCH Files</a> (PySide.qch / Shiboken.qch)</li>
-  </ul>
-  <small>Generated: $(date -u)</small>
-</body>
-</html>
-EOF
-
-      - name: Upload documentation artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: pyside6-6.10-docs-full
-          path: artifacts/
-          retention-days: 30
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: pyside/pyside-setup
+        fetch-depth: 0
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libxml2-dev \
+          libxslt1-dev \
+          graphviz \
+          libgl1-mesa-dev \
+          libxkbcommon-x11-0 \
+          libdbus-1-3 \
+          libxcb-icccm4 \
+          libxcb-image0 \
+          libxcb-keysyms1 \
+          libxcb-randr0 \
+          libxcb-render-util0 \
+          libxcb-xinerama0 \
+          libxcb-xinput0 \
+          libxcb-xfixes0
+        
+    - name: Create virtual environment
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+        echo "VIRTUAL_ENV=$PWD/venv" >> $GITHUB_ENV
+        echo "$PWD/venv/bin" >> $GITHUB_PATH
+        
+    - name: Install documentation requirements
+      run: |
+        source venv/bin/activate
+        pip install --upgrade pip
+        pip install -r requirements-doc.txt
+        
+    - name: Download Qt source code
+      run: |
+        wget https://download.qt.io/official_releases/qt/6.10/$QT_VERSION/single/qt-everywhere-src-$QT_VERSION.tar.xz
+        tar -xf qt-everywhere-src-$QT_VERSION.tar.xz
+        echo "QT_SRC_DIR=$PWD/qt-everywhere-src-$QT_VERSION" >> $GITHUB_ENV
+        
+    - name: Build PySide6 with documentation
+      run: |
+        source venv/bin/activate
+        python setup.py build \
+          --qt-src-dir=$QT_SRC_DIR \
+          --build-docs \
+          --doc-build-online \
+          --parallel=4 \
+          --cmake-generator=Ninja \
+          --ignore-git
+        
+    - name: Build API documentation
+      run: |
+        source venv/bin/activate
+        cd build/$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")/build/pyside6
+        ninja -j4 apidoc
+        
+    - name: Build base documentation
+      run: |
+        source venv/bin/activate
+        python setup.py build_base_docs
+        
+    - name: Archive HTML documentation
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyside6-docs-html
+        path: |
+          html/
+          build/$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")/build/pyside6/doc/html/
+        retention-days: 30
+        
+    - name: Archive QCH files
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyside6-docs-qch
+        path: |
+          build/$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")/build/pyside6/doc/html/PySide6.qch
+          build/$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")/build/shiboken6/doc/html/Shiboken6.qch
+        retention-days: 30
+        
+    - name: Test documentation build
+      run: |
+        source venv/bin/activate
+        # 检查主要文件是否存在
+        ls -la html/pyside6/index.html
+        ls -la build/$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")/build/pyside6/doc/html/index.html
+        
+    - name: Create summary report
+      run: |
+        echo "### PySide6 Documentation Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Build Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "**Python Version:** ${{ env.PYTHON_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Qt Version:** ${{ env.QT_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "**PySide Version:** ${{ env.PYSIDE_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Generated Artifacts:**" >> $GITHUB_STEP_SUMMARY
+        echo "- HTML Documentation (Base)" >> $GITHUB_STEP_SUMMARY
+        echo "- HTML Documentation (Full with API)" >> $GITHUB_STEP_SUMMARY
+        echo "- QCH Files (Offline Help)" >> $GITHUB_STEP_SUMMARY
