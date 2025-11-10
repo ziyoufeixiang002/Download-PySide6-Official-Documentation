@@ -1,4 +1,4 @@
-name: Build PySide6 Documentation (Base + API) - With Explicit Qt Path
+name: Build PySide6 Documentation (Base + API) - With Explicit Qt Path - Fixed aqtinstall
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
       with:
         python-version: '3.11'
 
-    # --- 安装 aqtinstall 和 Qt (明确指定版本和架构) ---
+    # --- 安装 aqtinstall 和 Qt (明确指定版本和架构 - 修正 aqtinstall 命令) ---
     - name: Install aqtinstall and Qt SDK
       env:
         # 设置环境变量以便 aqtinstall 和后续步骤使用
@@ -42,10 +42,11 @@ jobs:
       run: |
         python -m pip install aqtinstall
         echo "Installing Qt $QT_VERSION for $QT_TARGET $QT_ARCH on $QT_HOST..."
-        # 安装基本 Qt 桌面模块
-        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION --outputdir ./Qt -m qtbase --arch $QT_ARCH
+        # 修正命令：架构 gcc_64 作为位置参数，紧跟在版本号后面
+        # aqt install-qt <host> <target> <version> [arch] ...
+        aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt -m qtbase
         # 如果需要其他模块（例如用于文档构建的 qdoc），可以在这里添加
-        # aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION --outputdir ./Qt -m <additional_module> --arch $QT_ARCH
+        # aqt install-qt $QT_HOST $QT_TARGET $QT_VERSION $QT_ARCH --outputdir ./Qt -m <additional_module>
         # 将 Qt 工具添加到 PATH
         echo "${{ github.workspace }}/Qt/$QT_VERSION/$QT_ARCH/bin" >> $GITHUB_PATH
         # 设置环境变量
@@ -171,7 +172,7 @@ jobs:
     - name: Upload Documentation Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: PySide6-Docs-Base-API-ExplicitQtPath
+        name: PySide6-Docs-Base-API-ExplicitQtPath-FixedAqtinstall
         path: |
           pyside-setup/build/*/build/*/doc/html
           pyside-setup/build/*/build/*/PySide.qch
