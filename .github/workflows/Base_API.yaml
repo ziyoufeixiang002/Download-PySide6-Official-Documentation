@@ -3,7 +3,7 @@ name: Build PySide6 Documentation2Base_API
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * 0'
+    - cron: '0 2 * * 0'  # 每周日 02:00 UTC
 
 permissions:
   contents: read
@@ -28,50 +28,74 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
 
-    - name: Cache pip
+    - name: Cache pip dependencies
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-pyside-doc-${{ hashFiles('**/requirements*.txt') }}
+        key: ${{ runner.os }}-pip-pyside-doc-3.11-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-pyside-doc-3.11-
 
-    - name: Install system deps
+    - name: Install system dependencies
       run: |
         set -euo pipefail
         sudo apt-get update
         sudo apt-get install -y \
-          cmake ninja-build \
-          libclang-14-dev llvm-14-dev \
-          libxml2-dev libxslt1-dev graphviz \
-          libgl1 libglx-mesa0 libpulse-dev libudev-dev \
-          libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev
+          cmake \
+          ninja-build \
+          libclang-14-dev \
+          llvm-14-dev \
+          libxml2-dev \
+          libxslt1-dev \
+          graphviz \
+          libgl1 \
+          libglx-mesa0 \
+          libpulse-dev \
+          libudev-dev \
+          libxkbcommon-x11-dev \
+          libxcb1-dev \
+          libxcb-xkb-dev
 
-    - name: Install Python deps
+    - name: Install Python build & Qt tooling dependencies
       working-directory: pyside-setup
       run: |
         set -euo pipefail
         pip install --upgrade pip
-        pip install aqtinstall  # ✅ 新增：用于安装 Qt SDK
+        pip install "aqtinstall>=3.3.0"  # ✅ v3.3+ required for Qt 6.7 module names
+
+    - name: Install Python project dependencies
+      working-directory: pyside-setup
+      run: |
+        set -euo pipefail
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; fi
 
-    - name: Install prebuilt Qt 6.7.0 (gcc_64)
+    - name: List available Qt 6.7.0 modules (debug aid)
+      run: aqt list-qt linux desktop --arch 6.7.0
+
+    - name: Install minimal prebuilt Qt 6.7.0 SDK (gcc_64)
       run: |
         set -euo pipefail
         aqt install-qt linux desktop 6.7.0 gcc_64 \
           --outputdir ${{ runner.temp }}/Qt \
-          --archives qtbase qtsvg qtdeclarative qttools
+          --modules qt.base qt.tools  # ✅ Correct module names for Qt 6.7+
 
-    - name: Add Qt bin to PATH
+    - name: Add Qt bin to PATH and set env
       run: |
-        echo "${{ runner.temp }}/Qt/6.7.0/gcc_64/bin" >> $GITHUB_PATH
+        QT_BIN="${{ runner.temp }}/Qt/6.7.0/gcc_64/bin"
+        echo "$QT_BIN" >> $GITHUB_PATH
+        echo "QT_DIR=${{ runner.temp }}/Qt/6.7.0/gcc_64" >> $GITHUB_ENV
 
-    - name: Verify qtpaths6
-      run: qtpaths6 --query QT_INSTALL_HEADERS
+    - name: Verify qtpaths6 is available
+      run: |
+        set -euo pipefail
+        qtpaths6 --version
+        qtpaths6 --query QT_INSTALL_HEADERS
 
     - name: Build PySide6 with documentation
       working-directory: pyside-setup
       env:
-        QT_SRC_DIR: ${{ runner.temp }}/Qt/6.7.0/gcc_64  # ✅ 指向 SDK 目录
+        QT_SRC_DIR: ${{ runner.temp }}/Qt/6.7.0/gcc_64  # ✅ Points to SDK, NOT source
       run: |
         set -euo pipefail
         python setup.py build \
@@ -81,23 +105,46 @@ jobs:
           --cmake="$(which cmake)" \
           --module-subset=Core,Gui,Widgets \
           --skip-examples
+          # ⚠️ Do NOT use --internal-build-type unless you know exact valid value
 
-    - name: Build API documentation
+    - name: Build API documentation (apidoc target)
       working-directory: pyside-setup/build
       run: |
         set -euo pipefail
-        cd pyside6 || { echo "build/pyside6 missing"; exit 1; }
-        if [ -f build.ninja ]; then ninja apidoc; else make apidoc; fi
+        if [ ! -d pyside6 ]; then
+          echo "❌ build/pyside6 not found"
+          ls -la
+          exit 1
+        fi
+        cd pyside6
+        if [ -f build.ninja ]; then
+          echo "⚙️ Running: ninja apidoc"
+          ninja apidoc
+        elif [ -f Makefile ]; then
+          echo "⚙️ Running: make apidoc"
+          make apidoc
+        else
+          echo "❌ No build system files"
+          ls -la
+          exit 1
+        fi
 
-    - name: Verify & Upload
+    - name: Verify HTML documentation generated
       run: |
         set -euo pipefail
-        DOC="pyside-setup/build/pyside6/doc/html"
-        test -f "$DOC/index.html" && echo "✅ Doc built"
-        du -sh "$DOC"
-      # Upload 略（同前，用 @v4）
+        DOC_PATH="pyside-setup/build/pyside6/doc/html"
+        if [ -d "$DOC_PATH" ] && [ -f "$DOC_PATH/index.html" ]; then
+          echo "✅ Documentation built successfully!"
+          echo "📁 Path: $DOC_PATH"
+          echo "📊 Size: $(du -sh "$DOC_PATH" | cut -f1)"
+        else
+          echo "❌ Failed: $DOC_PATH/index.html not found"
+          find pyside-setup/build -name "*.html" -path "*/doc/*" | head -n 15 || true
+          exit 1
+        fi
+
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v4  # ✅ Required after Jan 30, 2025
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
