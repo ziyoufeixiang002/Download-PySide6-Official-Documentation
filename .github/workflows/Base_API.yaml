@@ -5,74 +5,97 @@ on:
   schedule:
     - cron: '0 2 * * 0'  # 每周日早上2点自动构建
 
+permissions:
+  contents: read
+
 jobs:
   build-docs:
     runs-on: ubuntu-20.04
     timeout-minutes: 120  # 设置较长超时时间，文档构建可能耗时
-    
+
     steps:
     - name: Checkout pyside-setup repository
       uses: actions/checkout@v4
       with:
         repository: pyside/pyside-setup
         path: pyside-setup
-    
+        fetch-depth: 1
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.9'    # 如果遇到依赖问题，可尝试 3.10 或 3.11
         cache: 'pip'
-    
+
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
     - name: Install system dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           cmake ninja-build libclang-dev llvm \
           libxml2-dev libxslt1-dev graphviz \
-          libgl1 libpulse-dev libudev-dev \
-          libxkbcommon-x11-dev libxcb-* x11-utils
-    
+          libgl1-mesa-glx libpulse-dev libudev-dev \
+          libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev x11-utils
+
     - name: Install Python dependencies
       working-directory: pyside-setup
       run: |
         pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-doc.txt
-    
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt found"; fi
+        if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; else echo "No requirements-doc.txt found"; fi
+
     - name: Checkout Qt Base source from GitHub mirror
       uses: actions/checkout@v4
       with:
         repository: qt/qtbase
-        ref: 6.4.0  # 使用较稳定的版本
+        ref: v6.4.0   # 请确认 qt/qtbase 中的 tag 是否为 v6.4.0（有些仓库可能用 6.4.0 或 v6.4.0）
         path: qt-src
-    
+        fetch-depth: 1
+
     - name: Build PySide6 with documentation
       working-directory: pyside-setup
+      env:
+        QT_SRC_DIR: ${{ github.workspace }}/qt-src
       run: |
         python setup.py build \
           --build-docs \
           --doc-build-online \
-          --qt-src-dir ${{ github.workspace }}/qt-src \
-          --cmake=$(which cmake) \
+          --qt-src-dir "${QT_SRC_DIR}" \
+          --cmake="$(which cmake)" \
           --module-subset=Core,Gui,Widgets \
           --skip-examples
-    
+
     - name: Build API documentation
       working-directory: pyside-setup/build
       run: |
-        cd pyside6
-        # 尝试使用 ninja 或 make 构建 API 文档
-        if [ -f build.ninja ]; then
-          ninja apidoc
-        elif [ -f Makefile ]; then
-          make apidoc
+        set -e
+        if [ -d pyside6 ]; then
+          cd pyside6
+          # 尝试使用 ninja 或 make 构建 API 文档
+          if [ -f build.ninja ]; then
+            ninja apidoc
+          elif [ -f Makefile ]; then
+            make apidoc
+          else
+            echo "No build system files found for API documentation"
+            exit 1
+          fi
         else
-          echo "No build system files found for API documentation"
+          echo "Expected build/pyside6 directory not found"
+          ls -la ..
           exit 1
         fi
-    
+
     - name: Verify documentation build
       run: |
+        set -e
         DOC_PATH="pyside-setup/build/pyside6/doc/html"
         if [ -d "$DOC_PATH" ] && [ -f "$DOC_PATH/index.html" ]; then
           echo "✅ Documentation built successfully!"
@@ -80,10 +103,12 @@ jobs:
         else
           echo "❌ Documentation build failed or incomplete"
           echo "🔍 Checking available documentation files:"
-          find pyside-setup/build -name "*doc*" -type d || true
+          find pyside-setup/build -maxdepth 4 -type d -name "*doc*" -print || true
+          # 打印目录列表以便调试
+          ls -la pyside-setup/build || true
           exit 1
         fi
-    
+
     - name: Upload documentation artifact
       uses: actions/upload-artifact@v3
       with:
