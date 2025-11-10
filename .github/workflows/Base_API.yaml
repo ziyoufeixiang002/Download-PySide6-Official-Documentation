@@ -1,4 +1,4 @@
-name: Build PySide6 Documentation (Base + API) - Fixed
+name: Build PySide6 Documentation (Base + API) - With Qt Install
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-latest # 推荐使用 Ubuntu
-    timeout-minutes: 120 # 设置较长的超时时间
+    runs-on: ubuntu-latest
+    timeout-minutes: 180 # 进一步增加超时时间，因为安装 Qt 和构建会更耗时
 
     steps:
     - name: Checkout PySide6 Setup Repository
@@ -23,72 +23,83 @@ jobs:
     - name: Install System Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake git libclang-dev libxml2-dev libxslt1-dev python3-dev graphviz
+        sudo apt-get install -y build-essential cmake git libclang-dev libxml2-dev libxslt1-dev python3-dev graphviz libgl1-mesa-dev libxcb-cursor-dev libxcb-xinerama0-dev libxcb-randr0-dev libxcb-xtest0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
     # --- 设置 Python 环境 ---
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11' # 使用受支持的 Python 版本
+        python-version: '3.11'
+
+    # --- 安装 aqtinstall 和 Qt (示例版本 6.8.0) ---
+    - name: Install aqtinstall and Qt SDK
+      run: |
+        python -m pip install aqtinstall
+        # 安装 Qt 6.x 的一个版本 (例如 6.8.0) 到 ./Qt 目录
+        # host: linux, target: desktop, arch: gcc_64 (Linux x64)
+        # 请根据 pyside-setup 的需求选择合适的 Qt 版本和架构
+        QT_VERSION="6.8.0" # 请根据 pyside-setup 版本调整
+        echo "Installing Qt $QT_VERSION..."
+        aqt install-qt linux desktop $QT_VERSION --outputdir ./Qt -m qtwebengine # 可以添加更多模块，如 qtwebengine，如果需要的话
+        # 如果不需要 webengine，可以使用: aqt install-qt linux desktop $QT_VERSION --outputdir ./Qt
+        # 将 Qt 工具添加到 PATH
+        echo "${{ github.workspace }}/Qt/$QT_VERSION/gcc_64/bin" >> $GITHUB_PATH
+        # 设置环境变量
+        echo "QT_DIR=${{ github.workspace }}/Qt/$QT_VERSION/gcc_64" >> $GITHUB_ENV
 
     # --- 升级并固定核心构建工具版本 ---
     - name: Upgrade and Pin Core Build Tools
       working-directory: ./pyside-setup
       run: |
-        python -m pip install --upgrade pip setuptools wheel==0.42.0 # 固定 wheel 版本以避免冲突
+        python -m pip install --upgrade pip setuptools wheel==0.42.0
 
     # --- 安装 Python 依赖 ---
     - name: Install Python Documentation Requirements
       working-directory: ./pyside-setup
       run: |
-        # 再次确保核心工具是最新的，以防 requirements-doc.txt 覆盖了版本
         python -m pip install --upgrade setuptools wheel==0.42.0
-        # 安装文档构建所需的 Python 包
         if [ -f requirements-doc.txt ]; then
             echo "Installing requirements from requirements-doc.txt..."
             python -m pip install -r requirements-doc.txt
         else
-            echo "requirements-doc.txt not found in pyside-setup root. Installing minimal set for documentation."
-            # 如果没有 requirements-doc.txt，则安装文档构建所需的基本包
+            echo "requirements-doc.txt not found. Installing minimal set for documentation."
             python -m pip install sphinx sphinx-rtd-theme
         fi
 
-    # --- 获取 Qt 源码 (使用镜像仓库) ---
-    - name: Get Qt Source Code (Mirror)
+    # --- 获取 Qt 源码 (用于文档构建) ---
+    - name: Get Qt Source Code (for docs)
       run: |
         git clone --filter=blob:none --sparse https://github.com/qt/qt5.git qt5_src
         cd qt5_src
-        # 检出特定的 Qt 6.x 版本标签，例如 6.8.0
-        # 请注意：必须选择与 pyside-setup 兼容的 Qt 版本
+        # 检出与安装的 Qt 版本匹配的源码
         git fetch --all --tags
-        # 列出最新的几个 6.x 标签供参考（可选）
-        echo "Fetching available 6.x tags..."
-        git tag -l | grep -E "^v?[0-9]+\.6\.[0-9]+$" | sort -V | tail -10 || echo "No 6.x tags found or command failed"
-        # 请根据 pyside-setup 的要求选择正确的 Qt 版本
-        QT_TAG="v6.8.0" # 示例版本，请务必根据实际情况修改
-        echo "Checking out Qt tag: $QT_TAG"
+        QT_TAG="v6.8.0" # 必须与上面安装的版本一致
+        echo "Checking out Qt source tag: $QT_TAG"
         git checkout tags/$QT_TAG -b qt-$QT_TAG
-        # 获取必要的子模块（PySide6 主要需要 qtbase）
         git submodule update --init --depth 1 qtbase
-        # 如果需要更多模块，可以在这里添加 submodule update 命令
-        # git submodule update --init --depth 1 <module_name>
 
     # --- 构建 Shiboken 和 PySide6 (包含文档) ---
+    # 现在 setup.py 应该能找到 Qt 了
     - name: Build Shiboken and PySide6 (with Docs)
       working-directory: ./pyside-setup
+      env:
+        # 确保环境变量被传递
+        QT_DIR: ${{ env.QT_DIR }}
       run: |
-        # 设置必要的环境变量（如果需要）
-        # export PATH="/usr/bin:$PATH" # 确保 dot 在 PATH 中
-        # 构建所有组件，并启用文档构建
-        python setup.py build --build-type=all --parallel 2 --build-docs # 使用 2 个核心并行构建，启用文档
+        # 确认 Qt 工具在 PATH 中
+        which qmake6 || echo "qmake6 not found in PATH"
+        which qtpaths6 || echo "qtpaths6 not found in PATH"
+        # 确认 Qt_DIR 环境变量设置正确
+        echo "QT_DIR is set to: $QT_DIR"
+        # 执行构建命令，指定 Qt 源码路径用于文档
+        # 注意：--qt-src-dir 指向克隆的源码目录
+        python setup.py build --build-type=all --parallel 2 --build-docs --qt-src-dir=../qt5_src
 
     # --- 尝试运行 ninja apidoc (如果 setup.py build 未完成) ---
     - name: Run Ninja API Doc Build (if needed)
       working-directory: ./pyside-setup
       run: |
         # 查找 PySide6 的构建输出目录
-        # 路径通常是 build/<env_name>/build/pyside6 或类似结构
-        # 使用 find 命令来定位
         PYSIDE_BUILD_DIR=$(find build -maxdepth 3 -name "pyside6" -type d -path "*/build/*" | head -n 1)
         SHIBOKEN_BUILD_DIR=$(find build -maxdepth 3 -name "shiboken6" -type d -path "*/build/*" | head -n 1)
 
@@ -102,22 +113,19 @@ jobs:
                 echo "build.ninja found, running: ninja apidoc -j 2"
                 ninja apidoc -j 2
             else
-                echo "build.ninja NOT found in $PYSIDE_BUILD_DIR. The setup.py build step might have handled doc generation or failed."
-                ls -la # 列出当前目录内容以便调试
+                echo "build.ninja NOT found in $PYSIDE_BUILD_DIR."
+                ls -la
             fi
         else
-            echo "PySide6 build directory NOT FOUND in $(pwd)/build"
-            find build -type d -name "*" | head -20 # 列出 build 目录下所有子目录的前 20 个，用于调试
+            echo "PySide6 build directory NOT FOUND."
+            find build -type d -name "*" | head -20
         fi
 
         if [ -n "$SHIBOKEN_BUILD_DIR" ] && [ -d "$SHIBOKEN_BUILD_DIR" ]; then
             echo "Found Shiboken6 build directory: $SHIBOKEN_BUILD_DIR"
             cd "$SHIBOKEN_BUILD_DIR"
-            # Shiboken 通常不单独运行 apidoc，其文档生成可能由 PySide6 的 ninja apidoc 触发或集成
-            # 但我们可以检查是否有 build.ninja
             if [ -f "build.ninja" ]; then
                  echo "Shiboken6 build.ninja exists."
-                 # 可能不需要再次运行 ninja apidoc，因为 PySide6 会处理它
             fi
         fi
 
@@ -125,10 +133,10 @@ jobs:
     - name: Upload Documentation Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: PySide6-Docs-Base-API-Fixed
+        name: PySide6-Docs-Base-API-WithQt
         path: |
-          pyside-setup/build/*/build/*/doc/html # 匹配 pyside6 和 shiboken6 的 html 文档
-          pyside-setup/build/*/build/*/PySide.qch # 匹配 pyside6 的 QCH 文件
-          pyside-setup/build/*/build/*/Shiboken.qch # 匹配 shiboken6 的 QCH 文件
-        if-no-files-found: warn # 如果未找到文件，发出警告但不失败
+          pyside-setup/build/*/build/*/doc/html
+          pyside-setup/build/*/build/*/PySide.qch
+          pyside-setup/build/*/build/*/Shiboken.qch
+        if-no-files-found: warn
         retention-days: 30
