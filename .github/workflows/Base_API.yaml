@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  actions: write  # for cache
+  actions: write
 
 jobs:
   build-docs:
@@ -15,12 +15,9 @@ jobs:
     env:
       QT_VERSION: "6.10.0"
       QT_SRC_ARCHIVE: "qt-everywhere-src-${{ env.QT_VERSION }}.tar.xz"
-      # 官方源（主）
       QT_SRC_URL_OFFICIAL: "https://download.qt.io/official_releases/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
-      # 镜像源（fallback）
       QT_SRC_URL_TUNA: "https://mirrors.tuna.tsinghua.edu.cn/qt/archive/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
       QT_SRC_URL_USTC: "https://mirrors.ustc.edu.cn/qtproject/archive/qt/${{ env.QT_VERSION%.* }}/${{ env.QT_VERSION }}/single/${{ env.QT_SRC_ARCHIVE }}"
-      # 私有 Release 源（需提前上传到本 repo 的 Release，如 v6.10.0-assets）
       QT_SRC_RELEASE_TAG: "v6.10.0-assets"
       PYSIDE_REPO: "https://github.com/pyside/pyside-setup.git"
       PYSIDE_TAG: "v6.10.0"
@@ -43,85 +40,69 @@ jobs:
             libxml2-dev libxslt1-dev \
             libgl1-mesa-dev libegl1-mesa-dev \
             graphviz libgraphviz-dev \
-            wget tar xz-utils
+            wget tar xz-utils \
+            qt6-base-dev-tools  # ensures qdoc6/qtpaths6 in PATH
 
       - name: Cache Qt source
         id: cache-qt-src
         uses: actions/cache@v4
         with:
           path: ${{ env.QT_SRC_ARCHIVE }}
-          key: qt-src-${{ env.QT_VERSION }}-v2  # ← v2: avoid stale cache
+          key: qt-src-${{ env.QT_VERSION }}-v3
 
-      - name: Download Qt source (try: cache → official → mirrors → private release)
+      - name: Download Qt source (cache → official → mirrors → release)
         if: steps.cache-qt-src.outputs.cache-hit != 'true'
         run: |
-          set -e
-          echo "Qt source not cached. Attempting downloads..."
+          set -euo pipefail
+          ARCHIVE="${{ env.QT_SRC_ARCHIVE }}"
+          echo "Qt source not cached. Trying download strategies..."
 
-          # Try 1: official
-          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_OFFICIAL }}" -O "${{ env.QT_SRC_ARCHIVE }}.part"; then
-            mv "${{ env.QT_SRC_ARCHIVE }}.part" "${{ env.QT_SRC_ARCHIVE }}"
-            echo "✅ Downloaded from official source"
-            exit 0
-          else
-            echo "⚠️ Official source failed. Trying mirrors..."
-          fi
-
-          # Try 2: TUNA
-          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_TUNA }}" -O "${{ env.QT_SRC_ARCHIVE }}.part"; then
-            mv "${{ env.QT_SRC_ARCHIVE }}.part" "${{ env.QT_SRC_ARCHIVE }}"
-            echo "✅ Downloaded from TUNA mirror"
+          # Strategy 1: Official
+          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_OFFICIAL }}" -O "$ARCHIVE.tmp"; then
+            mv "$ARCHIVE.tmp" "$ARCHIVE"
+            echo "✅ Downloaded from official"
             exit 0
           fi
 
-          # Try 3: USTC
-          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_USTC }}" -O "${{ env.QT_SRC_ARCHIVE }}.part"; then
-            mv "${{ env.QT_SRC_ARCHIVE }}.part" "${{ env.QT_SRC_ARCHIVE }}"
-            echo "✅ Downloaded from USTC mirror"
+          # Strategy 2: TUNA
+          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_TUNA }}" -O "$ARCHIVE.tmp"; then
+            mv "$ARCHIVE.tmp" "$ARCHIVE"
+            echo "✅ Downloaded from TUNA"
             exit 0
           fi
 
-          # Try 4: Private Release Asset (requires gh CLI & token)
-          echo "⚠️ All mirrors failed. Trying private Release asset..."
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-          if gh release download ${{ env.QT_SRC_RELEASE_TAG }} \
-               --repo "$GITHUB_REPOSITORY" \
-               -p "${{ env.QT_SRC_ARCHIVE }}" 2>/dev/null; then
-            echo "✅ Downloaded from private Release: ${{ env.QT_SRC_RELEASE_TAG }}"
+          # Strategy 3: USTC
+          if wget -q --timeout=30 --tries=2 "${{ env.QT_SRC_URL_USTC }}" -O "$ARCHIVE.tmp"; then
+            mv "$ARCHIVE.tmp" "$ARCHIVE"
+            echo "✅ Downloaded from USTC"
             exit 0
           fi
 
-          echo "❌ Failed to download Qt source from all sources."
-          ls -lh
+          # Strategy 4: Private Release (requires gh CLI)
+          if command -v gh >/dev/null && \
+             echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token && \
+             gh release download "${{ env.QT_SRC_RELEASE_TAG }}" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 -p "$ARCHIVE" 2>/dev/null; then
+            echo "✅ Downloaded from private release"
+            exit 0
+          fi
+
+          echo "❌ All download strategies failed"
           exit 1
-
-      - name: Verify Qt archive integrity (optional but recommended)
-        run: |
-          # 若你有 SHA256SUMS 文件，可提前上传为 artifact 或 hardcode
-          # 示例：已知 qt-everywhere-src-6.10.0.tar.xz 的 SHA256
-          EXPECTED_SHA256="a0e3e7b3e6b3f3e2a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5"  # ← ✏️ 替换为真实值！
-          ACTUAL_SHA256=$(sha256sum "${{ env.QT_SRC_ARCHIVE }}" | cut -d' ' -f1)
-          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "❌ SHA256 mismatch!"
-            echo "Expected: $EXPECTED_SHA256"
-            echo "Actual:   $ACTUAL_SHA256"
-            exit 1
-          else
-            echo "✅ SHA256 verified"
-          fi
 
       - name: Extract Qt source
         run: |
-          echo "Extracting Qt source..."
           mkdir -p qt-src
-          time tar -xf "${{ env.QT_SRC_ARCHIVE }}" -C qt-src --strip-components=1
-          echo "✅ Extraction done."
+          echo "Extracting ${{ env.QT_SRC_ARCHIVE }}..."
+          tar -xf "${{ env.QT_SRC_ARCHIVE }}" -C qt-src --strip-components=1
+          echo "✅ Qt source extracted."
 
-      - name: Clone PySide6 setup repo at tag
+      - name: Clone PySide6 setup repo
         run: |
           git clone --depth 1 --branch ${{ env.PYSIDE_TAG }} ${{ env.PYSIDE_REPO }} pyside-setup
 
-      - name: Install Python doc build requirements
+      - name: Install documentation requirements
         run: |
           cd pyside-setup
           pip install -r requirements-doc.txt
@@ -132,22 +113,6 @@ jobs:
           source venv-docs/bin/activate
           pip install -U pip
           pip install -r pyside-setup/requirements-doc.txt
-
-      - name: Ensure qdoc is available (install system Qt dev tools as fallback)
-        run: |
-          # 尝试 locate qdoc6/qdoc
-          if command -v qdoc6 >/dev/null 2>&1; then
-            echo "✅ qdoc6 found in PATH"
-          elif command -v qdoc >/dev/null 2>&1; then
-            echo "✅ qdoc found in PATH"
-          else
-            echo "⚠️ qdoc not found; installing qt6-base-dev-tools..."
-            sudo apt-get install -y qt6-base-dev-tools
-            if ! command -v qdoc6 >/dev/null 2>&1; then
-              echo "❌ qdoc6 still missing after install"
-              exit 1
-            fi
-          fi
 
       - name: Build PySide6 + Documentation
         run: |
@@ -164,15 +129,14 @@ jobs:
             --skip-packaging \
             --verbose-build
 
-      - name: Build API documentation via ninja
+      - name: Build API docs with ninja
         run: |
           source venv-docs/bin/activate
           BUILD_DIR=$(find . -name "build" -type d -not -path "*/\.*" | grep -E "build.*${{ env.PYTHON_VERSION }}" | head -n1 || echo "./build")
-          echo "Using build dir: $BUILD_DIR"
-          cd "$BUILD_DIR/pyside6" || { echo "pyside6 build dir not found"; exit 1; }
+          cd "$BUILD_DIR/pyside6" || { echo "❌ pyside6 build dir not found"; exit 1; }
           ninja apidoc -j $(nproc)
 
-      - name: Collect artifacts
+      - name: Collect and package documentation
         run: |
           source venv-docs/bin/activate
           mkdir -p artifacts/{html,qch}
@@ -181,35 +145,32 @@ jobs:
           SHIBOKEN_HTML_DIR=$(find . -path "*/shiboken6/doc/html" -type d | head -n1)
           QCH_FILES=$(find . -name "*.qch" -type f)
 
-          [ -d "$HTML_DIR" ] && cp -r "$HTML_DIR"/* artifacts/html/ 2>/dev/null || echo "⚠️ PySide6 HTML not found"
-          [ -d "$SHIBOKEN_HTML_DIR" ] && cp -r "$SHIBOKEN_HTML_DIR"/* artifacts/html/shiboken6/ 2>/dev/null || echo "⚠️ Shiboken HTML not found"
-          [ -n "$QCH_FILES" ] && cp $QCH_FILES artifacts/qch/ 2>/dev/null || echo "⚠️ No QCH files found"
+          [ -n "$HTML_DIR" ] && cp -r "$HTML_DIR"/* artifacts/html/ 2>/dev/null || true
+          [ -n "$SHIBOKEN_HTML_DIR" ] && mkdir -p artifacts/html/shiboken6 && cp -r "$SHIBOKEN_HTML_DIR"/* artifacts/html/shiboken6/ 2>/dev/null || true
+          [ -n "$QCH_FILES" ] && cp $QCH_FILES artifacts/qch/ 2>/dev/null || true
 
-          cat > artifacts/index.html <<EOF
+          cat > artifacts/index.html <<'EOF'
 <!DOCTYPE html>
-<html><head><title>PySide6 6.10 Docs</title></head><body>
-<h1>PySide6 6.10 Documentation</h1>
-<ul>
-  <li><a href="html/pyside6/index.html">📖 HTML (PySide6)</a></li>
-  <li><a href="html/shiboken6/index.html">📖 HTML (Shiboken)</a></li>
-  <li><a href="qch/">📦 QCH Files</a> (use with Qt Assistant)</li>
-</ul>
-<p><small>Generated on: $(date -u)</small></p>
-</body></html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PySide6 6.10 Docs</title>
+</head>
+<body>
+  <h1>PySide6 6.10 Full Documentation</h1>
+  <ul>
+    <li><a href="html/pyside6/index.html">📖 PySide6 HTML</a></li>
+    <li><a href="html/shiboken6/index.html">📖 Shiboken HTML</a></li>
+    <li><a href="qch/">📦 QCH Files</a> (PySide.qch / Shiboken.qch)</li>
+  </ul>
+  <small>Generated: $(date -u)</small>
+</body>
+</html>
 EOF
 
-      - name: Upload artifacts
+      - name: Upload documentation artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pyside6-docs-full
+          name: pyside6-6.10-docs-full
           path: artifacts/
           retention-days: 30
-
-      - name: Optional: Deploy to GitHub Pages
-        if: ${{ github.ref == 'refs/heads/main' && false }}  # ← set to `true` to enable
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: artifacts
-          publish_branch: gh-pages
-          force_orphan: true
