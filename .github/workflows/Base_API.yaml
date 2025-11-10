@@ -1,16 +1,16 @@
 name: Build PySide6 Documentation2Base_API
 
 on:
-  workflow_dispatch:  # 手动触发构建
+  workflow_dispatch:  # 手动触发
   schedule:
-    - cron: '0 2 * * 0'  # 每周日早上2点自动构建
+    - cron: '0 2 * * 0'  # 每周日 02:00 UTC
 
 permissions:
   contents: read
 
 jobs:
   build-docs:
-    runs-on: ubuntu-latest  # ✅ 改为 ubuntu-latest（24.04）
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
@@ -21,13 +21,13 @@ jobs:
         path: pyside-setup
         fetch-depth: 1
 
-    - name: Set up Python
+    - name: Set up Python 3.9
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
         cache: 'pip'
 
-    - name: Cache pip
+    - name: Cache pip dependencies
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
@@ -37,22 +37,34 @@ jobs:
 
     - name: Install system dependencies
       run: |
+        set -euo pipefail
         sudo apt-get update
         sudo apt-get install -y \
-          cmake ninja-build \
-          libclang-14-dev llvm-14-dev \  # ✅ 显式使用 clang-14 兼容 Qt6.4
-          libxml2-dev libxslt1-dev graphviz \
-          libgl1 libglx-mesa0 libpulse-dev libudev-dev \
-          libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev x11-utils
+          cmake \
+          ninja-build \
+          libclang-14-dev \
+          llvm-14-dev \
+          libxml2-dev \
+          libxslt1-dev \
+          graphviz \
+          libgl1 \
+          libglx-mesa0 \
+          libpulse-dev \
+          libudev-dev \
+          libxkbcommon-x11-dev \
+          libxcb1-dev \
+          libxcb-xkb-dev \
+          x11-utils
 
     - name: Install Python dependencies
       working-directory: pyside-setup
       run: |
+        set -euo pipefail
         pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt found"; fi
-        if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; else echo "No requirements-doc.txt found"; fi
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; fi
 
-    - name: Checkout Qt Base source from GitHub mirror
+    - name: Checkout Qt Base (v6.4.0)
       uses: actions/checkout@v4
       with:
         repository: qt/qtbase
@@ -64,10 +76,11 @@ jobs:
       working-directory: pyside-setup
       env:
         QT_SRC_DIR: ${{ github.workspace }}/qt-src
-        # 可选：显式指定 clang-14（若后续构建报 clang 版本问题，取消注释下方两行）
+        # 可选：显式绑定 clang-14（若构建中报 clang 版本警告，取消注释）
         # CLANG_EXECUTABLE: /usr/bin/clang-14
         # LLVM_CONFIG: /usr/bin/llvm-config-14
       run: |
+        set -euo pipefail
         python setup.py build \
           --build-docs \
           --doc-build-online \
@@ -76,42 +89,45 @@ jobs:
           --module-subset=Core,Gui,Widgets \
           --skip-examples
 
-    - name: Build API documentation
+    - name: Build API documentation (apidoc target)
       working-directory: pyside-setup/build
       run: |
-        set -e
-        if [ -d pyside6 ]; then
-          cd pyside6
-          if [ -f build.ninja ]; then
-            ninja apidoc
-          elif [ -f Makefile ]; then
-            make apidoc
-          else
-            echo "❌ No build system files (ninja/Makefile) found for API documentation"
-            ls -la .
-            exit 1
-          fi
+        set -euo pipefail
+        if [ ! -d pyside6 ]; then
+          echo "❌ build/pyside6 directory missing"
+          ls -la
+          exit 1
+        fi
+        cd pyside6
+        if [ -f build.ninja ]; then
+          echo "⚙️ Using ninja to build apidoc..."
+          ninja apidoc
+        elif [ -f Makefile ]; then
+          echo "⚙️ Using make to build apidoc..."
+          make apidoc
         else
-          echo "❌ Expected build/pyside6 directory not found"
-          ls -la ..
+          echo "❌ Neither build.ninja nor Makefile found in build/pyside6/"
+          ls -la
           exit 1
         fi
 
-    - name: Verify documentation build
+    - name: Verify HTML documentation generated
       run: |
-        set -e
+        set -euo pipefail
         DOC_PATH="pyside-setup/build/pyside6/doc/html"
         if [ -d "$DOC_PATH" ] && [ -f "$DOC_PATH/index.html" ]; then
-          echo "✅ Documentation built successfully!"
+          echo "✅ Documentation build succeeded!"
+          echo "📁 Output: $DOC_PATH"
           echo "📊 Size: $(du -sh "$DOC_PATH" | cut -f1)"
         else
-          echo "❌ Documentation build failed: $DOC_PATH/index.html missing"
-          find pyside-setup/build -name "*.html" -path "*/doc/*" | head -n 10 || true
+          echo "❌ Documentation not found at $DOC_PATH"
+          echo "🔍 Available doc-related files:"
+          find pyside-setup/build -type f \( -name "*.html" -o -name "*.rst" \) -path "*/doc/*" | head -n 20 || true
           exit 1
         fi
 
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4  # ✅ 已升级至 v4（符合 2025-01-30 强制要求）
+      uses: actions/upload-artifact@v4  # ✅ Required after Jan 30, 2025
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
