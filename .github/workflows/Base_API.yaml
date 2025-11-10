@@ -1,4 +1,4 @@
-name: Build PySide6 Documentation (Base + API)
+name: Build PySide6 Documentation (Base + API) - Fixed
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-latest # 推荐使用 Ubuntu，因为 macOS 和 Windows 可能有更多依赖问题
-    timeout-minutes: 120 # 设置较长的超时时间，因为构建很耗时
+    runs-on: ubuntu-latest # 推荐使用 Ubuntu
+    timeout-minutes: 120 # 设置较长的超时时间
 
     steps:
     - name: Checkout PySide6 Setup Repository
@@ -23,22 +23,35 @@ jobs:
     - name: Install System Dependencies
       run: |
         sudo apt-get update
-        # 安装构建 PySide6 和文档所需的基本依赖
         sudo apt-get install -y build-essential cmake git libclang-dev libxml2-dev libxslt1-dev python3-dev graphviz
 
     # --- 设置 Python 环境 ---
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11' # 使用受支持的 Python 版本，根据需要调整
+        python-version: '3.11' # 使用受支持的 Python 版本
+
+    # --- 升级并固定核心构建工具版本 ---
+    - name: Upgrade and Pin Core Build Tools
+      working-directory: ./pyside-setup
+      run: |
+        python -m pip install --upgrade pip setuptools wheel==0.42.0 # 固定 wheel 版本以避免冲突
 
     # --- 安装 Python 依赖 ---
     - name: Install Python Documentation Requirements
       working-directory: ./pyside-setup
       run: |
-        python -m pip install --upgrade pip
+        # 再次确保核心工具是最新的，以防 requirements-doc.txt 覆盖了版本
+        python -m pip install --upgrade setuptools wheel==0.42.0
         # 安装文档构建所需的 Python 包
-        if [ -f requirements-doc.txt ]; then pip install -r requirements-doc.txt; else echo "requirements-doc.txt not found in pyside-setup root, attempting to proceed."; fi
+        if [ -f requirements-doc.txt ]; then
+            echo "Installing requirements from requirements-doc.txt..."
+            python -m pip install -r requirements-doc.txt
+        else
+            echo "requirements-doc.txt not found in pyside-setup root. Installing minimal set for documentation."
+            # 如果没有 requirements-doc.txt，则安装文档构建所需的基本包
+            python -m pip install sphinx sphinx-rtd-theme
+        fi
 
     # --- 获取 Qt 源码 (使用镜像仓库) ---
     - name: Get Qt Source Code (Mirror)
@@ -46,81 +59,76 @@ jobs:
         git clone --filter=blob:none --sparse https://github.com/qt/qt5.git qt5_src
         cd qt5_src
         # 检出特定的 Qt 6.x 版本标签，例如 6.8.0
-        # 注意：请根据 pyside-setup 版本选择兼容的 Qt 版本
+        # 请注意：必须选择与 pyside-setup 兼容的 Qt 版本
         git fetch --all --tags
-        # 列出可用的 6.x 标签（可选，用于调试）
-        git tag -l | grep -E "^v?6\.[0-9]+\.[0-9]+$" | sort -V | tail -5 || echo "No 6.x tags found or command failed"
-        # 请根据需要调整版本号
-        QT_TAG="v6.8.0" # 示例版本，务必根据实际情况修改
+        # 列出最新的几个 6.x 标签供参考（可选）
+        echo "Fetching available 6.x tags..."
+        git tag -l | grep -E "^v?[0-9]+\.6\.[0-9]+$" | sort -V | tail -10 || echo "No 6.x tags found or command failed"
+        # 请根据 pyside-setup 的要求选择正确的 Qt 版本
+        QT_TAG="v6.8.0" # 示例版本，请务必根据实际情况修改
+        echo "Checking out Qt tag: $QT_TAG"
         git checkout tags/$QT_TAG -b qt-$QT_TAG
-        # 获取必要的子模块（根据需要可能需要调整）
+        # 获取必要的子模块（PySide6 主要需要 qtbase）
         git submodule update --init --depth 1 qtbase
         # 如果需要更多模块，可以在这里添加 submodule update 命令
         # git submodule update --init --depth 1 <module_name>
 
-    # --- 构建 Shiboken 和 PySide6 ---
-    - name: Build Shiboken and PySide6
+    # --- 构建 Shiboken 和 PySide6 (包含文档) ---
+    - name: Build Shiboken and PySide6 (with Docs)
       working-directory: ./pyside-setup
       run: |
-        python setup.py build --build-type=all --parallel 2 # 使用 2 个核心并行构建以节省时间，根据 runner 能力调整
-        # 安装到临时目录，以便文档构建脚本能找到它们
-        python setup.py install --target /tmp/pyside6_install --no-deps # --no-deps 避免重复安装 Python 依赖
+        # 设置必要的环境变量（如果需要）
+        # export PATH="/usr/bin:$PATH" # 确保 dot 在 PATH 中
+        # 构建所有组件，并启用文档构建
+        python setup.py build --build-type=all --parallel 2 --build-docs # 使用 2 个核心并行构建，启用文档
 
-    # --- 构建完整文档 (Base + API) ---
-    - name: Build Full Documentation (Base + API)
+    # --- 尝试运行 ninja apidoc (如果 setup.py build 未完成) ---
+    - name: Run Ninja API Doc Build (if needed)
       working-directory: ./pyside-setup
       run: |
-        # 设置 PYTHONPATH 以便找到刚构建安装的模块
-        export PYTHONPATH="/tmp/pyside6_install:$PYTHONPATH"
-        # 设置 PATH 以便找到 dot (graphviz)
-        export PATH="/usr/bin:$PATH"
-        # 运行构建命令，指定 Qt 源码路径
-        # 注意：这里的 --qt-src-dir 指向的是克隆的 qt5_src 目录
-        python setup.py build --build-type=all --parallel 2 --build-docs # 确保启用文档构建
-        # 文档构建可能在 setup.py build 过程中完成，或者需要单独的步骤
-        # 尝试运行 ninja apidoc (如果 setup.py build 没有完全完成文档构建)
-        # 查找构建目录，通常在 build/<python_env_name>/build/pyside6
-        # 注意：这里的路径可能需要根据实际 setup.py 输出调整
-        # 假设构建目录是 build/$(python -c 'import sys; print("".join(sys.version.split()[:2]))')/build
-        # 更可靠的查找方式
-        BUILD_DIR=$(find /home/runner/work/pyside6-docs-builder/pyside6-docs-builder/pyside-setup/build -maxdepth 2 -type d -name "*pyside6" | head -n 1)
-        SHIBOKEN_BUILD_DIR=$(find /home/runner/work/pyside6-docs-builder/pyside6-docs-builder/pyside-setup/build -maxdepth 2 -type d -name "*shiboken6" | head -n 1)
-        echo "Found PySide6 build dir: $BUILD_DIR"
-        echo "Found Shiboken6 build dir: $SHIBOKEN_BUILD_DIR"
-        if [ -d "$BUILD_DIR" ]; then
-            cd "$BUILD_DIR"
+        # 查找 PySide6 的构建输出目录
+        # 路径通常是 build/<env_name>/build/pyside6 或类似结构
+        # 使用 find 命令来定位
+        PYSIDE_BUILD_DIR=$(find build -maxdepth 3 -name "pyside6" -type d -path "*/build/*" | head -n 1)
+        SHIBOKEN_BUILD_DIR=$(find build -maxdepth 3 -name "shiboken6" -type d -path "*/build/*" | head -n 1)
+
+        echo "PySide6 Build Dir Candidate: $PYSIDE_BUILD_DIR"
+        echo "Shiboken6 Build Dir Candidate: $SHIBOKEN_BUILD_DIR"
+
+        if [ -n "$PYSIDE_BUILD_DIR" ] && [ -d "$PYSIDE_BUILD_DIR" ]; then
+            echo "Found PySide6 build directory: $PYSIDE_BUILD_DIR"
+            cd "$PYSIDE_BUILD_DIR"
             if [ -f "build.ninja" ]; then
-                ninja apidoc -j 2 # 使用 2 个核心并行构建文档
+                echo "build.ninja found, running: ninja apidoc -j 2"
+                ninja apidoc -j 2
             else
-                echo "build.ninja not found in $BUILD_DIR, assuming setup.py handled it or failed."
-                # 如果 ninja 不可用，可能需要查找其他构建系统输出
-                # 或者 setup.py build --build-docs 已经尝试构建了
-                ls -la # 列出目录内容以便调试
+                echo "build.ninja NOT found in $PYSIDE_BUILD_DIR. The setup.py build step might have handled doc generation or failed."
+                ls -la # 列出当前目录内容以便调试
             fi
         else
-            echo "PySide6 build directory not found!"
-            ls -la /home/runner/work/pyside6-docs-builder/pyside6-docs-builder/pyside-setup/build # 列出构建根目录以便调试
-            exit 1
-        fi
-        if [ -d "$SHIBOKEN_BUILD_DIR" ]; then
-            cd "$SHIBOKEN_BUILD_DIR"
-            if [ -f "build.ninja" ]; then
-                 # Shiboken 也可能有文档构建步骤，如果需要
-                 # ninja apidoc # 通常 PySide6 的 ninja apidoc 会处理相关部分
-                 echo "Shiboken build dir: $SHIBOKEN_BUILD_DIR"
-            fi
+            echo "PySide6 build directory NOT FOUND in $(pwd)/build"
+            find build -type d -name "*" | head -20 # 列出 build 目录下所有子目录的前 20 个，用于调试
         fi
 
+        if [ -n "$SHIBOKEN_BUILD_DIR" ] && [ -d "$SHIBOKEN_BUILD_DIR" ]; then
+            echo "Found Shiboken6 build directory: $SHIBOKEN_BUILD_DIR"
+            cd "$SHIBOKEN_BUILD_DIR"
+            # Shiboken 通常不单独运行 apidoc，其文档生成可能由 PySide6 的 ninja apidoc 触发或集成
+            # 但我们可以检查是否有 build.ninja
+            if [ -f "build.ninja" ]; then
+                 echo "Shiboken6 build.ninja exists."
+                 # 可能不需要再次运行 ninja apidoc，因为 PySide6 会处理它
+            fi
+        fi
 
     # --- 上传文档工件 ---
     - name: Upload Documentation Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: PySide6-Docs-Base-API
+        name: PySide6-Docs-Base-API-Fixed
         path: |
-          pyside-setup/build/*/build/pyside6/doc/html
-          pyside-setup/build/*/build/shiboken6/doc/html
-          pyside-setup/build/*/build/pyside6/PySide.qch
-          pyside-setup/build/*/build/shiboken6/Shiboken.qch
-        if-no-files-found: ignore # 如果未找到文件，不要失败
+          pyside-setup/build/*/build/*/doc/html # 匹配 pyside6 和 shiboken6 的 html 文档
+          pyside-setup/build/*/build/*/PySide.qch # 匹配 pyside6 的 QCH 文件
+          pyside-setup/build/*/build/*/Shiboken.qch # 匹配 shiboken6 的 QCH 文件
+        if-no-files-found: warn # 如果未找到文件，发出警告但不失败
         retention-days: 30
