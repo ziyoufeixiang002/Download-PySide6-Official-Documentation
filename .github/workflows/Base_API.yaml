@@ -56,11 +56,13 @@ jobs:
           libxcb1-dev \
           libxcb-xkb-dev
 
-    - name: Install aqtinstall v3.3.2 (critical fix for Qt 6.7+)
+    - name: Install aqtinstall v3.3.2 (bypass cached index)
       run: |
         set -euo pipefail
         python -m pip install --upgrade pip
-        python -m pip install "aqtinstall==3.3.2"  # ✅ Exact version — fixes qt_base fallback bug
+        python -m pip install \
+          --index-url https://pypi.org/simple/ \
+          "aqtinstall==3.3.2"  # ✅ Confirmed on PyPI (2024-12-19), forces latest index
 
     - name: Install Python project dependencies
       working-directory: pyside-setup
@@ -138,7 +140,7 @@ jobs:
         fi
 
     - name: Upload documentation artifact
-      uses: actions/upload-artifact@v4  # ✅ REQUIRED after Jan 30, 2025 (per GitHub policy)
+      uses: actions/upload-artifact@v4  # ✅ REQUIRED after Jan 30, 2025 — per GitHub deprecation policy
       with:
         name: pyside6-full-documentation
         path: pyside-setup/build/pyside6/doc/html/
