@@ -1,101 +1,55 @@
-# .github/workflows/crawl-kotlin-wget.yml
-name: Crawl Kotlin Docs with Wget
+#!/bin/bash
 
-# 触发条件：可以手动触发，或根据需要设置计划
-on:
-  workflow_dispatch: # 允许手动触发
-  # schedule:
-  #   # 例如，每周日凌晨3点运行 (UTC)
-  #   - cron: '0 3 * * 0'
+# 设置变量
+BASE_URLS=("https://kotlinlang.org/docs/" "https://kotlinlang.org/api/")
+OUTPUT_DIR="kotlin_docs"
+LINKS_FILE="kotlin_links.txt"
 
-jobs:
-  crawl:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6小时超时，符合您的要求
+# 创建输出目录
+mkdir -p $OUTPUT_DIR
+cd $OUTPUT_DIR
 
-    steps:
-    - name: Checkout repository (Optional, if needed for other scripts)
-      uses: actions/checkout@v4
-      # 如果您的仓库完全不需要检出代码，可以移除此步骤
+echo "开始爬取 Kotlin 文档..."
 
-    - name: Install wget (usually pre-installed on ubuntu-latest, but good to be sure)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y wget
+# 使用 wget 递归爬取，但只获取链接
+for url in "${BASE_URLS[@]}"; do
+    echo "爬取: $url"
+    
+    # 使用 wget 递归下载，但限制深度和文件类型
+    wget \
+        --recursive \
+        --level=10 \
+        --no-parent \
+        --page-requisites \
+        --html-extension \
+        --convert-links \
+        --restrict-file-names=windows \
+        --domains=kotlinlang.org \
+        --reject="*.jpg,*.jpeg,*.png,*.gif,*.bmp,*.svg,*.ico" \
+        --reject="*.mp3,*.wav,*.ogg,*.mp4,*.avi,*.mov,*.webm" \
+        --reject="*.pdf,*.zip,*.tar,*.gz" \
+        --timeout=30 \
+        --tries=3 \
+        --wait=1 \
+        --random-wait \
+        --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+        "$url"
+done
 
-    - name: Create output directory
-      run: |
-        mkdir -p ./kotlin_docs_mirror
+# 提取所有爬取到的链接
+echo "提取链接..."
+find . -type f -name "*.html" -exec grep -o 'href="[^"]*"' {} \; | \
+    sed 's/href="//g' | sed 's/"$//g' | \
+    grep -E '^https://kotlinlang.org/(docs|api)' | \
+    grep -v -E '\.(jpg|jpeg|png|gif|bmp|svg|ico|mp3|wav|ogg|mp4|avi|mov|webm|pdf|zip|tar|gz)' | \
+    sort -u > ../$LINKS_FILE
 
-    - name: Run Wget to mirror docs and api sections
-      run: |
-        # 使用 wget 递归下载
-        # -e robots=off: 忽略 robots.txt (请确保符合网站政策)
-        # -r: 递归下载
-        # -np: 不向上爬取（不进入父目录）
-        # -nH: 不创建以主机名命名的目录
-        # --cut-dirs=1: 忽略第一个目录层级（例如，如果需要的话，但这里可能不完全适用，因为 docs/ 和 api/ 是不同的路径）
-        # -R: 排除特定文件类型（图片、视频、音频等）
-        # -l: 递归深度限制 (设置为 10 应该足够深，可以根据需要调整)
-        # --user-agent: 设置用户代理
-        # -P: 指定下载到的本地目录
-        # --domains: 限制下载的域名
-        # --reject-regex: 使用正则表达式进一步过滤链接（可选，但有助于精确控制）
-        # -E: 为目录索引文件添加 .html 扩展名
-        # --convert-links: 转换链接为本地链接（便于离线浏览，可选）
-        # --page-requisites: 下载页面正常显示所需的文件（如 CSS, 图片 - 但我们用 -R 排除了图片）
-        # 结合 -R 和 --page-requisites 需要小心，这里我们不使用 --page-requisites 因为它可能拉取不需要的资源
+# 统计结果
+LINK_COUNT=$(wc -l < ../$LINKS_FILE)
+echo "爬取完成! 共找到 $LINK_COUNT 个链接"
 
-        echo "Starting to crawl https://kotlinlang.org/docs/"
-        wget \
-          --recursive \
-          --no-parent \
-          --no-host-directories \
-          --reject="*.png,*.jpg,*.jpeg,*.gif,*.webp,*.svg,*.ico,*.mp4,*.avi,*.mov,*.wmv,*.flv,*.webm,*.mp3,*.wav,*.ogg,*.m4a,*.aac,*.zip,*.tar,*.gz,*.bz2" \
-          --level=10 \
-          --user-agent="Mozilla/5.0 (compatible; KotlinDocMirrorBot/1.0; +https://github.com/${{ github.repository }})" \
-          --directory-prefix=./kotlin_docs_mirror \
-          --domains=kotlinlang.org \
-          --accept-regex="(https?://)?kotlinlang\.org/(docs|api)/.*" \
-          --html-extension \
-          --no-verbose \
-          https://kotlinlang.org/docs/
+# 清理下载的文件（我们只需要链接，不需要实际内容）
+cd ..
+rm -rf $OUTPUT_DIR
 
-        echo "Starting to crawl https://kotlinlang.org/api/"
-        # 对 api 部分重复 wget 命令
-        wget \
-          --recursive \
-          --no-parent \
-          --no-host-directories \
-          --reject="*.png,*.jpg,*.jpeg,*.gif,*.webp,*.svg,*.ico,*.mp4,*.avi,*.mov,*.wmv,*.flv,*.webm,*.mp3,*.wav,*.ogg,*.m4a,*.aac,*.zip,*.tar,*.gz,*.bz2" \
-          --level=10 \
-          --user-agent="Mozilla/5.0 (compatible; KotlinDocMirrorBot/1.0; +https://github.com/${{ github.repository }})" \
-          --directory-prefix=./kotlin_docs_mirror \
-          --domains=kotlinlang.org \
-          --accept-regex="(https?://)?kotlinlang\.org/(docs|api)/.*" \
-          --html-extension \
-          --no-verbose \
-          https://kotlinlang.org/api/
-
-    - name: List downloaded files (for verification)
-      run: |
-        echo "Contents of ./kotlin_docs_mirror after crawling:"
-        find ./kotlin_docs_mirror -type f | head -20 # 显示前20个文件
-        echo "Total file count:"
-        find ./kotlin_docs_mirror -type f | wc -l
-
-    - name: Compress downloaded content (Optional, for easier download)
-      run: |
-        tar -czf kotlin_docs_mirror.tar.gz -C ./kotlin_docs_mirror .
-
-    - name: Upload downloaded content as artifact (Optional, to download later)
-      uses: actions/upload-artifact@v4
-      with:
-        name: kotlin-docs-mirror-${{ github.run_number }} # 使用运行号命名，避免冲突
-        path: |
-          ./kotlin_docs_mirror/
-          # kotlin_docs_mirror.tar.gz # 如果压缩了，可以上传压缩包
-        retention-days: 5 # 保留5天，可根据需要调整
-        if-no-files-found: error # 如果没有找到文件则报错
-      # 注意：此步骤会将下载的文件打包成工件。如果您不需要下载这些文件，
-      # 可以移除此步骤。wget 的下载内容将留在 Actions 工作空间中直到运行结束。
+echo "结果已保存到: $LINKS_FILE"
