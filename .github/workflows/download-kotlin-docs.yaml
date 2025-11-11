@@ -6,7 +6,7 @@ on:
     - cron: '0 0 1 * *'  # 每月第一天运行一次
 
 env:
-  KOTLIN_VERSION: '1.9.0'  # 可根据需要调整版本
+  KOTLIN_VERSION: '2.2.21'  # 可根据需要调整版本
   DOCS_BASE_URL: 'https://kotlinlang.org/docs'
 
 jobs:
