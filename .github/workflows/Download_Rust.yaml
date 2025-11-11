@@ -1,0 +1,157 @@
+name: Download Rust Standard Library Documentation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 1 * *'  # 每月第一天运行一次
+
+env:
+  RUST_VERSION: '1.70.0'  # 可根据需要调整版本
+  DOCS_BASE_URL: 'https://doc.rust-lang.org/std'
+  START_URL: 'https://doc.rust-lang.org/std/index.html'
+
+jobs:
+  download-documentation:
+    name: Download Rust Std Docs
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install wget and httrack
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget httrack
+        
+    - name: Download Rust std documentation using wget
+      run: |
+        # 创建输出目录
+        mkdir -p rust-std-docs
+        
+        # 使用wget镜像Rust标准库文档，只下载/std/路径下的内容
+        wget --mirror \
+             --convert-links \
+             --adjust-extension \
+             --page-requisites \
+             --no-parent \
+             --no-host-directories \
+             --restrict-file-names=windows \
+             --reject-regex=".*\.(svg|png|jpg|jpeg|gif|ico|bmp|webp|tiff|psd|ai|eps|raw|mp4|avi|mov|wmv|flv|mkv|webm|m4v|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|wma|m4a|aiff|pcm|midi)$" \
+             --accept-regex=".*doc\.rust-lang\.org/std.*" \
+             --wait=1 \
+             --random-wait \
+             --limit-rate=1M \
+             --timeout=60 \
+             --tries=5 \
+             -e robots=off \
+             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+             --directory-prefix=rust-std-docs \
+             --level=inf \
+             --span-hosts \
+             --domains=doc.rust-lang.org \
+             "$START_URL" || echo "wget镜像完成或有部分错误"
+        
+        echo "Rust标准库文档下载完成"
+        
+    - name: Use HTTrack for focused mirroring
+      run: |
+        # 使用HTTrack进行镜像，只关注/std/路径
+        httrack "$START_URL" \
+          -O rust-std-httrack \
+          -%v \
+          -r10 \
+          -s0 \
+          -#L1000000 \
+          -*.png *.jpg *.gif *.svg \
+          +*.html +*.js +*.css \
+          -ad.doubleclick.net/* \
+          -www.google-analytics.com/* \
+          -F "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+          -%q -robots=0 \
+          %u || echo "httrack镜像完成"
+        
+    - name: Create index page
+      run: |
+        # 创建简单的索引页面
+        cat > rust-std-docs/index.html << EOF
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Rust Standard Library Documentation Mirror</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; }
+                h1 { color: #333; }
+                ul { list-style-type: none; padding: 0; }
+                li { margin: 10px 0; }
+                a { text-decoration: none; color: #0066cc; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>Rust Standard Library Documentation Mirror</h1>
+            <p>离线镜像下载于: $(date)</p>
+            <p><a href="std/index.html">查看标准库文档</a></p>
+            <p><em>Note: This is a focused mirror containing only Rust standard library documentation.</em></p>
+            <p><strong>Filtered resources:</strong> Images, videos, audio files and icons have been excluded to reduce download size.</p>
+        </body>
+        </html>
+        EOF
+        
+    - name: Archive downloaded documentation
+      uses: actions/upload-artifact@v4
+      with:
+        name: rust-std-docs-mirror
+        path: |
+          rust-std-docs/
+          rust-std-httrack/
+        retention-days: 90
+        
+    - name: Create documentation summary
+      run: |
+        echo "### Rust 标准库文档镜像下载摘要" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**下载日期:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "**Rust 版本:** ${{ env.RUST_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "**文档地址:** ${{ env.DOCS_BASE_URL }}" >> $GITHUB_STEP_SUMMARY
+        echo "**起始页面:** ${{ env.START_URL }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**下载内容:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Rust 标准库完整文档镜像" >> $GITHUB_STEP_SUMMARY
+        echo "- 只包含 /std/ 路径下的内容" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**下载方法:**" >> $GITHUB_STEP_SUMMARY
+        echo "- wget聚焦镜像（只下载/std/路径）" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTrack专业镜像工具（备用）" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**保留的资源:**" >> $GITHUB_STEP_SUMMARY
+        echo "- HTML文件" >> $GITHUB_STEP_SUMMARY
+        echo "- JavaScript文件 (JS)" >> $GITHUB_STEP_SUMMARY
+        echo "- 样式表文件 (CSS)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**过滤的资源:**" >> $GITHUB_STEP_SUMMARY
+        echo "- 图片文件: svg, png, jpg, jpeg, gif, ico, bmp, webp, tiff, psd, ai, eps, raw" >> $GITHUB_STEP_SUMMARY
+        echo "- 视频文件: mp4, avi, mov, wmv, flv, mkv, webm, m4v, mpg, mpeg, 3gp" >> $GITHUB_STEP_SUMMARY
+        echo "- 音频文件: mp3, wav, flac, aac, ogg, wma, m4a, aiff, pcm, midi" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**下载设置:**" >> $GITHUB_STEP_SUMMARY
+        echo "- 只接受包含 'doc.rust-lang.org/std' 的URL" >> $GITHUB_STEP_SUMMARY
+        echo "- 递归深度: 无限" >> $GITHUB_STEP_SUMMARY
+        echo "- 超时时间: 60秒" >> $GITHUB_STEP_SUMMARY
+        echo "- 重试次数: 5次" >> $GITHUB_STEP_SUMMARY
+        echo "- 限速: 1MB/s" >> $GITHUB_STEP_SUMMARY
+        echo "- 域名限制: 仅下载 doc.rust-lang.org 域名下的内容" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # 统计下载的文件数量
+        echo "**文件统计:**" >> $GITHUB_STEP_SUMMARY
+        echo "- wget镜像HTML文件: $(find rust-std-docs -name '*.html' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- wget镜像JS文件: $(find rust-std-docs -name '*.js' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- wget镜像CSS文件: $(find rust-std-docs -name '*.css' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- wget镜像总文件数: $(find rust-std-docs -type f | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- wget镜像目录大小: $(du -sh rust-std-docs | cut -f1)" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTrack镜像HTML文件: $(find rust-std-httrack -name '*.html' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTrack镜像JS文件: $(find rust-std-httrack -name '*.js' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTrack镜像CSS文件: $(find rust-std-httrack -name '*.css' | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTrack镜像总文件数: $(find rust-std-httrack -type f | wc -l) 个" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTrack镜像目录大小: $(du -sh rust-std-httrack | cut -f1)" >> $GITHUB_STEP_SUMMARY
