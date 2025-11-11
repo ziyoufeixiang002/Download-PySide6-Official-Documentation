@@ -1,52 +1,69 @@
-#!/bin/bash
+name: Crawl Kotlin Documentation
 
-# 设置变量
-BASE_URLS=("https://kotlinlang.org/docs/" "https://kotlinlang.org/api/")
-OUTPUT_DIR="kotlin_docs"
-MAX_DEPTH=10  # 最大递归深度
-USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+on:
+  workflow_dispatch:  # 手动触发
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日午夜运行一次
 
-# 创建输出目录
-mkdir -p $OUTPUT_DIR
-cd $OUTPUT_DIR
-
-echo "开始爬取 Kotlin 文档..."
-
-# 使用 wget 递归下载文档
-for url in "${BASE_URLS[@]}"; do
-    echo "正在爬取: $url"
+jobs:
+  crawl-kotlin-docs:
+    runs-on: ubuntu-latest
     
-    wget \
-        --recursive \
-        --level=$MAX_DEPTH \
-        --no-parent \
-        --page-requisites \
-        --html-extension \
-        --convert-links \
-        --adjust-extension \
-        --restrict-file-names=windows \
-        --domains=kotlinlang.org \
-        --reject="*.jpg,*.jpeg,*.png,*.gif,*.bmp,*.svg,*.ico" \
-        --reject="*.mp3,*.wav,*.ogg,*.mp4,*.avi,*.mov,*.webm" \
-        --reject="*.pdf,*.zip,*.tar,*.gz" \
-        --timeout=30 \
-        --tries=3 \
-        --wait=2 \
-        --random-wait \
-        --user-agent="$USER_AGENT" \
-        --directory-prefix=. \
-        "$url"
-done
-
-# 统计下载的文件
-HTML_COUNT=$(find . -name "*.html" -o -name "*.htm" | wc -l)
-TOTAL_FILES=$(find . -type f | wc -l)
-
-echo "爬取完成!"
-echo "下载的HTML文件: $HTML_COUNT"
-echo "总文件数: $TOTAL_FILES"
-echo "文档已保存到: $OUTPUT_DIR"
-
-# 创建索引文件
-find . -name "*.html" -o -name "*.htm" | sort > ../doc_index.txt
-echo "索引文件已创建: doc_index.txt"
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up environment
+      run: |
+        mkdir -p kotlin-docs
+        
+    - name: Install wget
+      run: sudo apt-get update && sudo apt-get install -y wget
+        
+    - name: Crawl Kotlin documentation
+      run: |
+        cd kotlin-docs
+        
+        # 爬取 https://kotlinlang.org/docs 开头的链接
+        wget \
+          --recursive \
+          --level=5 \
+          --no-parent \
+          --no-clobber \
+          --html-extension \
+          --convert-links \
+          --restrict-file-names=windows \
+          --domains kotlinlang.org \
+          --regex-type "pcre" \
+          --accept-regex "https://kotlinlang\.org/(docs|api).*" \
+          --reject-regex ".*\.(jpg|jpeg|png|gif|bmp|svg|webp|mp3|wav|ogg|mp4|avi|mov|flv|webm)$" \
+          --no-check-certificate \
+          --timeout=60 \
+          --tries=3 \
+          --wait=2 \
+          --random-wait \
+          -e robots=off \
+          --user-agent="Mozilla/5.0 (compatible; GitHub-Actions-Crawler)" \
+          https://kotlinlang.org/
+          
+    - name: Filter and organize downloaded content
+      run: |
+        # 删除可能下载的媒体文件（双重保险）
+        find kotlin-docs -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.gif" -o -name "*.bmp" -o -name "*.svg" -o -name "*.webp" -o -name "*.mp3" -o -name "*.wav" -o -name "*.ogg" -o -name "*.mp4" -o -name "*.avi" -o -name "*.mov" -o -name "*.flv" -o -name "*.webm" \) -delete
+        
+        # 显示下载的文件结构
+        echo "下载的文件结构:"
+        find kotlin-docs -type f -name "*.html" | head -20
+        
+    - name: Create summary
+      run: |
+        echo "爬取完成!"
+        echo "下载的HTML文件数量: $(find kotlin-docs -name "*.html" | wc -l)"
+        echo "总文件大小: $(du -sh kotlin-docs | cut -f1)"
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kotlin-documentation
+        path: kotlin-docs/
+        retention-days: 30
