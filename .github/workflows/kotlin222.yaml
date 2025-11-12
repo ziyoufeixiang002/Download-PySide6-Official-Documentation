@@ -1,0 +1,175 @@
+name: Crawl Kotlin Documentation - No Duplicates
+
+on:
+  workflow_dispatch:
+
+jobs:
+  crawl-kotlin-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330  # 5.5小时超时保护
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget python3 python3-pip
+        pip3 install requests beautifulsoup4 lxml
+      
+    - name: Create directories
+      run: |
+        mkdir -p kotlin-docs
+        mkdir -p partial-downloads
+        mkdir -p url-tracking
+        
+    - name: Generate URL list first
+      run: |
+        # 使用Python脚本先获取所有要下载的URL，避免重复
+        cat > generate_urls.py << 'EOF'
+        import requests
+        from bs4 import BeautifulSoup
+        import urllib.parse
+        import sys
+        
+        def get_all_links(base_url, max_level=3, current_level=0, visited=None):
+            if visited is None:
+                visited = set()
+                
+            if current_level > max_level or base_url in visited:
+                return set()
+                
+            visited.add(base_url)
+            all_links = set()
+            
+            try:
+                response = requests.get(base_url, timeout=10)
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    full_url = urllib.parse.urljoin(base_url, href)
+                    
+                    # 只保留docs和api开头的链接
+                    if 'kotlinlang.org/docs' in full_url or 'kotlinlang.org/api' in full_url:
+                        # 过滤掉媒体文件
+                        if not any(ext in full_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.mp3', '.wav', '.ogg', '.mp4', '.avi', '.mov', '.flv', '.webm', '.pdf', '.js', '.css', '.zip']):
+                            if full_url not in visited:
+                                all_links.add(full_url)
+                                print(f"Found: {full_url}")
+                
+                # 递归获取下一级链接
+                next_level_links = set()
+                for link in list(all_links):
+                    next_level_links |= get_all_links(link, max_level, current_level + 1, visited)
+                
+                all_links |= next_level_links
+                
+            except Exception as e:
+                print(f"Error processing {base_url}: {e}")
+                
+            return all_links
+        
+        # 主程序
+        docs_links = get_all_links('https://kotlinlang.org/docs/')
+        api_links = get_all_links('https://kotlinlang.org/api/')
+        
+        all_unique_links = docs_links | api_links
+        
+        print(f"Total unique URLs found: {len(all_unique_links)}")
+        
+        with open('url_list.txt', 'w') as f:
+            for url in sorted(all_unique_links):
+                f.write(url + '\n')
+        EOF
+        
+        python3 generate_urls.py
+        
+        echo "URL列表生成完成，共找到 $(wc -l < url_list.txt) 个唯一链接"
+        head -10 url_list.txt
+      
+    - name: Download using URL list with timeout
+      run: |
+        cd kotlin-docs
+        
+        # 使用URL列表下载，避免重复
+        # 设置5小时超时
+        timeout 5h wget \
+          --input-file=../url_list.txt \
+          --no-check-certificate \
+          --timeout=30 \
+          --tries=2 \
+          --wait=1 \
+          --html-extension \
+          --convert-links \
+          --restrict-file-names=unix \
+          --user-agent="Mozilla/5.0 (compatible; Docs-Crawler)" \
+          --progress=bar \
+          --timestamping \
+          --no-directories \
+          --level=0 \
+          --recursive || true
+          
+        echo "下载进程结束"
+        
+    - name: Backup and organize partial results
+      run: |
+        # 备份已下载内容
+        if [ "$(ls -A kotlin-docs 2>/dev/null)" ]; then
+          echo "备份已下载的 $(find kotlin-docs -type f | wc -l) 个文件..."
+          cp -r kotlin-docs/* partial-downloads/ 2>/dev/null || true
+        fi
+        
+        # 创建下载报告
+        date > kotlin-docs/download-report.txt
+        echo "总尝试下载URL数: $(wc -l < url_list.txt)" >> kotlin-docs/download-report.txt
+        echo "实际下载文件数: $(find kotlin-docs -type f | wc -l)" >> kotlin-docs/download-report.txt
+        echo "HTML文件数: $(find kotlin-docs -name "*.html" | wc -l)" >> kotlin-docs/download-report.txt
+        
+        # 清理小文件和空文件
+        find kotlin-docs -size -100c -delete 2>/dev/null || true
+        find kotlin-docs -type d -empty -delete 2>/dev/null || true
+        
+    - name: Remove duplicates and organize
+      run: |
+        # 移除重复文件（基于内容）
+        echo "检查重复文件..."
+        find kotlin-docs -type f -name "*.html" -exec md5sum {} \; | \
+          sort | uniq -w32 -d | while read md5 filename; do
+          echo "删除重复文件: $filename"
+          rm "$filename"
+        done || true
+        
+        # 重新组织文件结构
+        if [ -d "kotlin-docs/kotlinlang.org" ]; then
+          mv kotlin-docs/kotlinlang.org/* kotlin-docs/ 2>/dev/null || true
+          rm -rf kotlin-docs/kotlinlang.org
+        fi
+        
+    - name: Generate final report
+      run: |
+        echo "=== 最终下载报告 ==="
+        echo "唯一URL总数: $(wc -l < url_list.txt)"
+        echo "最终HTML文件数: $(find kotlin-docs -name "*.html" | wc -l)"
+        echo "总文件大小: $(du -sh kotlin-docs | cut -f1)"
+        
+        echo "文档分类统计:"
+        echo "- docs 部分: $(find kotlin-docs -path "*/docs/*" -name "*.html" 2>/dev/null | wc -l)"
+        echo "- api 部分: $(find kotlin-docs -path "*/api/*" -name "*.html" 2>/dev/null | wc -l)"
+        
+        # 生成站点地图
+        find kotlin-docs -name "*.html" | sed 's|kotlin-docs/||' | sort > kotlin-docs/sitemap.txt 2>/dev/null || true
+        
+        echo "前10个下载的页面:"
+        head -10 kotlin-docs/sitemap.txt | sed 's/^/  /'
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kotlin-docs-$(date +%s)
+        path: |
+          kotlin-docs/
+          url_list.txt
+          partial-downloads/
+        retention-days: 7
