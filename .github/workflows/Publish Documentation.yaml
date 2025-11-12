@@ -1,167 +1,153 @@
-name: Kotlin 2.2.21 Stdlib Docs
+name: Build Kotlin Stdlib Documentation
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main, develop ]
-  schedule:
-    - cron: '0 0 * * 0'  # 每周日午夜运行
-  workflow_dispatch:
-    inputs:
-      doc-type:
-        description: 'Documentation type'
-        required: true
-        default: 'html'
-        type: choice
-        options:
-        - html
-        - gfm
-        - javadoc
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+  workflow_dispatch:  # 允许手动触发
 
 env:
+  GRADLE_VERSION: '8.8'
   KOTLIN_VERSION: '2.2.21'
-  GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g'
+  JAVA_VERSION: '21'
 
 jobs:
-  multi-platform-docs:
-    name: Generate Multiplatform Docs
+  build-docs:
+    name: Build Kotlin Documentation
     runs-on: ubuntu-latest
     
-    strategy:
-      matrix:
-        target: [ 'jvm', 'js', 'native', 'wasm' ]
-        include:
-          - target: jvm
-            task: 'dokkaHtml'
-          - target: js
-            task: 'dokkaHtml'
-          - target: native
-            task: 'dokkaHtml'
-          - target: wasm  
-            task: 'dokkaHtml'
-
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
-        java-version: '21'
+        java-version: ${{ env.JAVA_VERSION }}
         cache: 'gradle'
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
-        gradle-version: '8.8'
+        gradle-version: ${{ env.GRADLE_VERSION }}
 
-    - name: Build documentation for ${{ matrix.target }}
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    - name: Build documentation with Dokka
       run: |
-        ./gradlew :kotlin-stdlib-${{ matrix.target }}:${{ matrix.task }} \
+        ./gradlew dokkaHtml \
+          dokkaGfm \
           -Pkotlin.version=${{ env.KOTLIN_VERSION }} \
           --no-daemon \
           --stacktrace \
-          --build-cache
+          --parallel
 
-    - name: Upload ${{ matrix.target }} documentation
+    - name: Upload documentation artifact
       uses: actions/upload-artifact@v4
       with:
-        name: docs-${{ matrix.target }}-${{ github.sha }}
+        name: kotlin-stdlib-docs-${{ github.sha }}
         path: |
-          **/build/dokka/html/**
+          **/build/dokka/**
         retention-days: 30
-        compression-level: 9
 
-  aggregate-docs:
-    name: Aggregate Documentation
+  test-docs:
+    name: Test Documentation Quality
     runs-on: ubuntu-latest
-    needs: multi-platform-docs
+    needs: build-docs
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Download all documentation artifacts
+    - name: Download documentation artifact
       uses: actions/download-artifact@v4
       with:
-        path: ./all-docs
-        pattern: docs-*-*
+        pattern: kotlin-stdlib-docs-*
         merge-multiple: true
 
-    - name: Create aggregated documentation index
-      run: |
-        mkdir -p aggregated-docs
-        cat > aggregated-docs/index.html << 'EOF'
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Kotlin ${{ env.KOTLIN_VERSION }} Standard Library Documentation</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 40px; }
-                h1 { color: #333; }
-                .platform { margin: 20px 0; padding: 15px; border-left: 4px solid #007ec6; background: #f5f5f5; }
-                a { color: #007ec6; text-decoration: none; }
-                a:hover { text-decoration: underline; }
-            </style>
-        </head>
-        <body>
-            <h1>Kotlin ${{ env.KOTLIN_VERSION }} Standard Library Documentation</h1>
-            <div class="platform">
-                <h2>Available Platforms:</h2>
-                <ul>
-                <li><a href="jvm/index.html">JVM Documentation</a></li>
-                <li><a href="js/index.html">JavaScript Documentation</a></li>
-                <li><a href="native/index.html">Native Documentation</a></li>
-                <li><a href="wasm/index.html">Wasm Documentation</a></li>
-                </ul>
-            </div>
-            <p>Generated on: $(date)</p>
-        </body>
-        </html>
-        EOF
-
-        # 移动各平台文档到对应目录
-        for platform in jvm js native wasm; do
-          if [ -d "all-docs/docs-$platform-${{ github.sha }}" ]; then
-            mv "all-docs/docs-$platform-${{ github.sha }}" "aggregated-docs/$platform"
-          fi
-        done
-
-    - name: Upload aggregated documentation
-      uses: actions/upload-artifact@v4
+    - name: Setup Node.js for documentation testing
+      uses: actions/setup-node@v4
       with:
-        name: aggregated-kotlin-docs-${{ github.sha }}
-        path: ./aggregated-docs
-        retention-days: 30
+        node-version: '18'
+        cache: 'npm'
 
-  quality-check:
-    name: Documentation Quality Check
+    - name: Install link checking tools
+      run: |
+        npm install -g markdown-link-check
+        npm install -g broken-link-checker
+
+    - name: Check documentation links
+      run: |
+        find . -name "*.html" -path "*/dokka/*" | head -20 | xargs -I {} echo "Checking {}"
+        # 基本链接检查
+        find . -name "*.md" -path "*/dokka/*" -exec markdown-link-check {} \;
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: [build-docs, test-docs]
+    if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
-    needs: aggregate-docs
+    
+    permissions:
+      pages: write
+      id-token: write
+      contents: write
+    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     
     steps:
-    - name: Download aggregated documentation
+    - name: Download documentation artifact
       uses: actions/download-artifact@v4
       with:
-        pattern: aggregated-kotlin-docs-*
+        pattern: kotlin-stdlib-docs-*
+        merge-multiple: true
+        path: ./site
+
+    - name: Setup Pages
+      uses: actions/configure-pages@v4
+    
+    - name: Upload to GitHub Pages
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./site
+    
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  publish-snapshot:
+    name: Publish Snapshot Docs
+    needs: [build-docs, test-docs]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download documentation artifact
+      uses: actions/download-artifact@v4
+      with:
+        pattern: kotlin-stdlib-docs-*
         merge-multiple: true
 
-    - name: Run documentation quality checks
-      run: |
-        # 检查基本文件结构
-        find . -name "*.html" | wc -l
-        find . -name "index.html" | head -5
-        
-        # 检查文件大小（确保文档生成完整）
-        du -sh ./*
-
-    - name: Archive documentation coverage
-      if: always()
-      uses: actions/upload-artifact@v4
+    - name: Upload to GitHub Pages (Snapshot)
+      uses: peaceiris/actions-gh-pages@v3
       with:
-        name: documentation-coverage-report
-        path: |
-          **/build/reports/dokka/**
-        retention-days: 7
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./artifact
+        destination_dir: ./snapshot
+        keep_files: false
