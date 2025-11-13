@@ -9,17 +9,17 @@ on:
         default: '6.8'
         type: choice
         options:
-        - '6.8'
-        - '6.9' 
-        - '6.10'
+          - '6.8'
+          - '6.9'
+          - '6.10'
       build_type:
         description: 'Documentation build type'
         required: true
         default: 'full'
         type: choice
         options:
-        - 'full'
-        - 'base'
+          - 'full'
+          - 'base'
 
 env:
   PYTHON_VERSION: '3.10'
@@ -66,7 +66,7 @@ jobs:
             QT_VERSION="6.8.0"
             ;;
           "6.9")
-            QT_VERSION="6.9.0" 
+            QT_VERSION="6.9.0"
             ;;
           "6.10")
             QT_VERSION="6.10.0"
@@ -105,7 +105,6 @@ jobs:
         if [ -f "requirements-doc.txt" ]; then
           pip install -r requirements-doc.txt
         else
-          # Fallback requirements for different versions
           pip install sphinx sphinx-rtd-theme sphinx-intl graphviz breathe
         fi
         
@@ -118,7 +117,7 @@ jobs:
           pip install wheel setuptools ninja
         fi
         
-    - name: Configure PySide build
+    - name: Configure PySide build (Full Docs)
       if: github.event.inputs.build_type == 'full'
       run: |
         source pyside-venv/bin/activate
@@ -167,22 +166,17 @@ jobs:
         source pyside-venv/bin/activate
         echo "Packaging documentation..."
         
-        # Create output directory
         mkdir -p documentation-artifacts
         
-        # Copy documentation based on build type
         if [ "${{ github.event.inputs.build_type }}" == "full" ]; then
-          # For full build, look for generated HTML in build directories
           if [ -d "build/pyside-venv/build/pyside6/doc/html" ]; then
             cp -r build/pyside-venv/build/pyside6/doc/html documentation-artifacts/pyside6
           fi
           if [ -d "build/pyside-venv/build/shiboken6/doc/html" ]; then
             cp -r build/pyside-venv/build/shiboken6/doc/html documentation-artifacts/shiboken6
           fi
-          # Copy QCH files
           find build -name "*.qch" -exec cp {} documentation-artifacts/ \; 2>/dev/null || true
         else
-          # For base build
           if [ -d "html/pyside6" ]; then
             cp -r html/pyside6 documentation-artifacts/pyside6
           fi
@@ -191,7 +185,6 @@ jobs:
           fi
         fi
         
-        # Create build info file
         cat > documentation-artifacts/build-info.txt << EOF
 PySide Version: ${{ github.event.inputs.pyside_version }}
 Qt Version: ${{ steps.qt_version.outputs.QT_VERSION }}
@@ -204,8 +197,7 @@ EOF
       uses: actions/upload-artifact@v4
       with:
         name: pyside-${{ github.event.inputs.pyside_version }}-${{ github.event.inputs.build_type }}-docs
-        path: |
-          documentation-artifacts/
+        path: documentation-artifacts/
         retention-days: 30
         
     - name: Create build summary
