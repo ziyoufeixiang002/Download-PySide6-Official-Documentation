@@ -1,0 +1,185 @@
+# 工作流名称：镜像 Kotlin 官方网站（mwget 加速版）
+name: Mirror Kotlin Website - Accelerated
+
+# 定义触发条件
+on:
+  # 允许手动触发工作流
+  workflow_dispatch:
+    inputs:
+      exclude_patterns:
+        description: '额外排除的文件模式'
+        required: false
+        default: '*.tmp,*.bak'
+        type: string
+      download_threads:
+        description: '下载线程数'
+        required: false
+        default: '10'
+        type: string
+
+  # 定时任务：每周日凌晨3点运行一次（UTC时间）
+  schedule:
+    - cron: '0 3 * * 0'
+
+  # 推送到主分支时触发
+  push:
+    branches: [ main, master ]
+
+# 工作流任务定义
+jobs:
+  # 镜像网站任务
+  mirror-website:
+    name: Mirror Kotlinlang.org with mwget
+    runs-on: ubuntu-latest
+    
+    steps:
+    # 步骤1：检出当前仓库
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    # 步骤2：安装必要工具（包括 mwget）
+    - name: Install required tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget python3-pip build-essential libssl-dev
+        # 安装 mwget
+        wget http://jaist.dl.sourceforge.net/project/kmphpfm/mwget/0.1/mwget_0.1.0.orig.tar.gz
+        tar -xzf mwget_0.1.0.orig.tar.gz
+        cd mwget-0.1.0
+        ./configure
+        make
+        sudo make install
+        cd ..
+        
+        # 替代方案：如果上述安装失败，使用多线程 wget 替代方案
+        pip3 install aria2c
+        echo "工具安装完成"
+        
+    # 步骤3：创建镜像目录
+    - name: Create mirror directory
+      run: |
+        MIRROR_DIR="kotlin-mirror-$(date +%Y%m%d-%H%M%S)"
+        mkdir -p $MIRROR_DIR
+        echo "MIRROR_DIR=$MIRROR_DIR" >> $GITHUB_ENV
+        echo "镜像目录创建: $MIRROR_DIR"
+        
+    # 步骤4：使用 mwget 多线程镜像网站
+    - name: Mirror website with mwget (multi-threaded)
+      id: mirror-mwget
+      continue-on-error: true  # 如果 mwget 失败，使用备用方案
+      run: |
+        echo "使用 mwget 进行多线程镜像下载..."
+        mwget -n ${{ github.event.inputs.download_threads || '10' }} \
+          --mirror \
+          --page-requisites \
+          --html-extension \
+          --convert-links \
+          --adjust-extension \
+          --no-parent \
+          --level=5 \
+          --no-clobber \
+          --timeout=30 \
+          --tries=2 \
+          --reject-regex='.*\.(mp4|avi|mov|mkv|wmv|flv|webm|mp3|wav|flac|aac|ogg|wma|jpg|jpeg|png|gif|bmp|tiff|webp|svg|ico|raw|cr2|nef|arw)' \
+          --no-check-certificate \
+          -e robots=off \
+          -P ${{ env.MIRROR_DIR }} \
+          https://kotlinlang.org/
+        
+        echo "mwget 下载完成"
+        
+    # 步骤5：备用方案 - 使用 aria2c 加速下载
+    - name: Fallback mirror with aria2c
+      if: steps.mirror-mwget.outcome == 'failure'
+      run: |
+        echo "mwget 失败，使用 aria2c 作为备用方案..."
+        
+        # 首先使用 wget 获取网站地图
+        wget --spider --force-html -r -l2 https://kotlinlang.org 2>&1 | grep '^--' | awk '{print $3}' | grep -v '\.\(css\|js\|png\|gif\|jpg\)$' > urls.txt
+        
+        # 使用 aria2c 多线程下载
+        aria2c -i urls.txt \
+          -j ${{ github.event.inputs.download_threads || '10' }} \
+          --max-connection-per-server=5 \
+          --split=5 \
+          --dir=${{ env.MIRROR_DIR }} \
+          --continue=true \
+          --timeout=30 \
+          --retry-wait=5 \
+          --max-tries=3 \
+          --check-certificate=false \
+          --user-agent="Mozilla/5.0 (compatible; MirrorBot/1.0)"
+        
+        echo "aria2c 备用下载完成"
+        
+    # 步骤6：最终备用方案 - 使用原生 wget
+    - name: Final fallback with standard wget
+      if: steps.mirror-mwget.outcome == 'failure'
+      run: |
+        echo "使用标准 wget 作为最终备用方案..."
+        wget \
+          --mirror \
+          --page-requisites \
+          --html-extension \
+          --convert-links \
+          --adjust-extension \
+          --no-parent \
+          --level=3 \
+          --no-clobber \
+          --timeout=30 \
+          --tries=2 \
+          --reject-regex='.*\.(mp4|avi|mov|mkv|wmv|flv|webm|mp3|wav|flac|aac|ogg|wma|jpg|jpeg|png|gif|bmp|tiff|webp|svg|ico|raw|cr2|nef|arw)' \
+          --no-check-certificate \
+          -e robots=off \
+          -P ${{ env.MIRROR_DIR }} \
+          https://kotlinlang.org/
+          
+        echo "标准 wget 下载完成"
+        
+    # 步骤7：显示镜像统计信息
+    - name: Display mirror statistics
+      run: |
+        echo "=== 镜像统计信息 ==="
+        echo "镜像目录: ${{ env.MIRROR_DIR }}"
+        echo "使用的下载工具: $([ -f urls.txt ] && echo 'aria2c' || (which mwget >/dev/null && echo 'mwget' || echo 'wget'))"
+        echo "总文件数: $(find ${{ env.MIRROR_DIR }} -type f | wc -l)"
+        echo "总目录数: $(find ${{ env.MIRROR_DIR }} -type d | wc -l)"
+        echo "镜像大小: $(du -sh ${{ env.MIRROR_DIR }} | cut -f1)"
+        
+        # 显示文件类型分布
+        echo "=== 文件类型分布 ==="
+        find ${{ env.MIRROR_DIR }} -type f -name "*.html" | wc -l | xargs echo "HTML 文件数:"
+        find ${{ env.MIRROR_DIR }} -type f -name "*.css" | wc -l | xargs echo "CSS 文件数:"
+        find ${{ env.MIRROR_DIR }} -type f -name "*.js" | wc -l | xargs echo "JavaScript 文件数:"
+        find ${{ env.MIRROR_DIR }} -type f -name "*.pdf" | wc -l | xargs echo "PDF 文件数:"
+        
+        echo "完成时间: $(date)"
+        
+    # 步骤8：清理和优化
+    - name: Clean up and optimize
+      run: |
+        # 删除空目录
+        find ${{ env.MIRROR_DIR }} -type d -empty -delete
+        
+        # 压缩文本文件以节省空间
+        find ${{ env.MIRROR_DIR }} -name "*.html" -o -name "*.css" -o -name "*.js" -o -name "*.txt" | head -100 | xargs -I {} gzip -k {}
+        
+        echo "清理和优化完成"
+        
+    # 步骤9：上传镜像文件作为构建产物
+    - name: Upload mirror as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kotlin-mirror-accelerated-$(date +%Y%m%d-%H%M%S)
+        path: ${{ env.MIRROR_DIR }}
+        retention-days: 30
+        compression-level: 9
+
+    # 步骤10：显示完成信息
+    - name: Completion message
+      run: |
+        echo "✅ Kotlin 网站镜像任务完成！"
+        echo "🚀 使用多线程下载加速"
+        echo "📁 镜像保存在: ${{ env.MIRROR_DIR }}"
+        echo "📦 产物已上传，可在 Actions 页面下载"
+        echo "⏰ 总耗时: $((SECONDS/60)) 分 $((SECONDS%60)) 秒"
