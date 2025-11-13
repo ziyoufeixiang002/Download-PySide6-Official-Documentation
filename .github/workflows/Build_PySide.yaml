@@ -1,0 +1,112 @@
+name: Build PySide Documentation
+
+on:
+  workflow_dispatch:
+    inputs:
+      pyside_version:
+        description: 'PySide version to build (e.g., 6.8.0, 6.7.0, 6.6.0)'
+        required: true
+        default: '6.8.0'
+        type: string
+      qt_version:
+        description: 'Corresponding Qt version (e.g., 6.8.0, 6.7.0, 6.6.0)'
+        required: true
+        default: '6.8.0'
+        type: string
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout PySide repository
+      uses: actions/checkout@v4
+      with:
+        repository: pyside/pyside-setup
+        ref: ${{ github.event.inputs.pyside_version }}
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libxml2-dev \
+          libxslt-dev \
+          graphviz \
+          ninja-build \
+          build-essential \
+          cmake \
+          git \
+          qt6-tools-dev \
+          qt6-tools-dev-tools
+        
+    - name: Install Qt source
+      run: |
+        # Download Qt source for the specified version
+        wget https://download.qt.io/official_releases/qt/${{ github.event.inputs.qt_version.split('.')[0] }}/${{ github.event.inputs.qt_version }}/single/qt-everywhere-src-${{ github.event.inputs.qt_version }}.tar.xz
+        tar -xf qt-everywhere-src-${{ github.event.inputs.qt_version }}.tar.xz
+        echo "QT_SRC_DIR=$(pwd)/qt-everywhere-src-${{ github.event.inputs.qt_version }}" >> $GITHUB_ENV
+        
+    - name: Create virtual environment and install dependencies
+      run: |
+        python -m venv pyside-env
+        source pyside-env/bin/activate
+        pip install --upgrade pip
+        pip install -r requirements-doc.txt
+        pip install sphinx-build sphinx-rtd-theme
+        
+    - name: Configure PySide build with documentation
+      run: |
+        source pyside-env/bin/activate
+        python setup.py build --build-docs \
+          --qt-src-dir=$QT_SRC_DIR \
+          --doc-build-online \
+          --build-tests \
+          --ignore-git
+        
+    - name: Build API documentation
+      run: |
+        source pyside-env/bin/activate
+        cd build/pyside-env/build/pyside6
+        ninja -j4 apidoc
+        
+    - name: Build Shiboken documentation
+      run: |
+        source pyside-env/bin/activate
+        cd build/pyside-env/build/shiboken6/doc
+        ninja -j4
+        
+    - name: Package documentation
+      run: |
+        mkdir -p documentation-output
+        # Copy PySide documentation
+        cp -r build/pyside-env/build/pyside6/doc/html documentation-output/pyside6
+        # Copy Shiboken documentation  
+        cp -r build/pyside-env/build/shiboken6/doc/html documentation-output/shiboken6
+        # Copy QCH files if they exist
+        find build/pyside-env/build -name "*.qch" -exec cp {} documentation-output/ \;
+        
+    - name: Upload documentation artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyside-${{ github.event.inputs.pyside_version }}-documentation
+        path: |
+          documentation-output/
+        retention-days: 30
+        
+    - name: Create documentation summary
+      run: |
+        echo "## PySide ${{ github.event.inputs.pyside_version }} Documentation Build Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Built Components:**" >> $GITHUB_STEP_SUMMARY
+        echo "- PySide6 API Documentation" >> $GITHUB_STEP_SUMMARY  
+        echo "- Shiboken6 Documentation" >> $GITHUB_STEP_SUMMARY
+        echo "- Offline QCH files" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Documentation Location:**" >> $GITHUB_STEP_SUMMARY
+        echo "- PySide6: \`documentation-output/pyside6/\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Shiboken6: \`documentation-output/shiboken6/\`" >> $GITHUB_STEP_SUMMARY
